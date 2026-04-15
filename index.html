@@ -1,0 +1,2154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Electronic MB Book</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
+<script>
+// ══════════════════════════════════════
+// FIREBASE CONFIGURATION
+// ══════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyDuv-2wjKV3d87YWHCH_-Yh1FPAJbpkTgA",
+  authDomain: "mb-book.firebaseapp.com",
+  projectId: "mb-book",
+  storageBucket: "mb-book.firebasestorage.app",
+  messagingSenderId: "513971781062",
+  appId: "1:513971781062:web:437afec69a29a62f3046c7"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// ══════════════════════════════════════
+// FIREBASE SAVE & LOAD
+// Saves all MB data to Firestore cloud
+// Data never deleted even if cache cleared
+// ══════════════════════════════════════
+function saveDFirebase(commId, data) {
+  if(!commId || !data) return;
+  try {
+    // Split into smaller chunks to avoid Firestore 1MB limit
+    const chunks = {
+      meta: { projects: data.projects||[], budget: data.budget||[], users: data.users||[], siteOrders: data.siteOrders||[], advances: data.advances||[] },
+      bills: { boq: data.boq||[], meas: data.meas||[], raBills: data.raBills||[], pending: data.pending||[], accountsLog: data.accountsLog||[], payments: data.payments||[] },
+      notifs: { notifs: data.notifs||{}, hind: data.hind||[], dev: data.dev||[] }
+    };
+    Object.keys(chunks).forEach(function(key) {
+      db.collection('committees').doc(commId).collection('data').doc(key).set(chunks[key])
+        .catch(function(e){ console.warn('Firebase save error:', e); });
+    });
+  } catch(e) { console.warn('Firebase error:', e); }
+}
+
+function loadDFirebase(commId, callback) {
+  if(!commId) { callback(null); return; }
+  try {
+    db.collection('committees').doc(commId).collection('data').get()
+      .then(function(snapshot) {
+        var merged = { projects:[], boq:[], meas:[], budget:[], hind:[], dev:[], siteOrders:[], raBills:[], pending:[], accountsLog:[], payments:[], advances:[], users:[], notifs:{} };
+        snapshot.forEach(function(doc) {
+          Object.assign(merged, doc.data());
+        });
+        callback(merged);
+      })
+      .catch(function(e) {
+        console.warn('Firebase load error:', e);
+        callback(null);
+      });
+  } catch(e) { console.warn('Firebase error:', e); callback(null); }
+}
+
+// Listen for real-time updates (so all users see same data instantly)
+var _fbUnsubscribe = null;
+function startFirebaseSync(commId) {
+  if(_fbUnsubscribe) _fbUnsubscribe();
+  try {
+    _fbUnsubscribe = db.collection('committees').doc(commId).collection('data')
+      .onSnapshot(function(snapshot) {
+        if(!MBD) return;
+        var merged = {};
+        snapshot.forEach(function(doc) { Object.assign(merged, doc.data()); });
+        if(Object.keys(merged).length > 0) {
+          Object.assign(MBD, merged);
+          // Refresh current view silently
+          var activeNav = document.querySelector('.nb-item.act');
+          if(activeNav) {
+            var sec = activeNav.getAttribute('data-sec');
+            if(sec && sec !== 'ra-submit') showSec(sec);
+          }
+        }
+      }, function(e) { console.warn('Sync error:', e); });
+  } catch(e) { console.warn('Firebase sync error:', e); }
+}
+</script>
+<style>
+:root{
+  --bg:#f4f2ee;--sur:#fff;--sur2:#f0ede8;--bdr:#ddd9d2;--bdr2:#c8c3bb;
+  --txt:#1a1814;--txt2:#6b6660;--txt3:#9e9991;
+  --grn:#1a4a2e;--grn2:#2d7a4f;--grnl:#e8f2ec;
+  --amb:#92580a;--ambb:#fdf3e3;--red:#9b2020;--redb:#fdeaea;
+  --blu:#1a3a6b;--blub:#e8eef8;
+  --r:8px;--rl:12px;
+  --sh:0 1px 3px rgba(0,0,0,.08);--shm:0 8px 32px rgba(0,0,0,.18);--shx:0 24px 64px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh;font-size:14px;}
+input,select,textarea,button{font-family:'DM Sans',sans-serif;}
+@keyframes rise{from{transform:translateY(14px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+/* ── PAGE SYSTEM ── */
+.pg{display:none;min-height:100vh;}
+.pg.on{display:flex;}
+
+/* ════════════════════════════════════════
+   PAGE 1: PORTAL HOME
+════════════════════════════════════════ */
+#pg-home{background:linear-gradient(155deg,#071a0e,#1a4a2e 60%,#2d7a4f);flex-direction:column;align-items:center;justify-content:center;padding:2rem 1rem;}
+.h-logo{text-align:center;margin-bottom:2.5rem;color:#fff;}
+.h-logo .hi{font-size:4rem;display:block;margin-bottom:.875rem;}
+.h-logo h1{font-size:28px;font-weight:700;}
+.h-logo p{font-size:13px;opacity:.6;margin-top:6px;}
+.h-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;width:min(820px,100%);margin-bottom:2rem;}
+.h-card{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:18px;padding:1.875rem 1.5rem;cursor:pointer;transition:all .18s;text-align:center;color:#fff;}
+.h-card:hover{background:rgba(255,255,255,.14);transform:translateY(-3px);box-shadow:0 12px 40px rgba(0,0,0,.3);}
+.h-card .hci{font-size:2.5rem;display:block;margin-bottom:.875rem;}
+.h-card h2{font-size:16px;font-weight:700;margin-bottom:.5rem;}
+.h-card p{font-size:12px;opacity:.65;line-height:1.6;}
+.h-card .hcb{display:inline-block;margin-top:1.125rem;padding:7px 20px;background:#fff;color:var(--grn);border-radius:18px;font-size:12px;font-weight:700;}
+.h-foot{color:rgba(255,255,255,.35);font-size:11.5px;text-align:center;}
+
+/* ════════════════════════════════════════
+   PAGE 2: CREATE COMMITTEE
+════════════════════════════════════════ */
+#pg-create{background:linear-gradient(155deg,#071a0e,#1a4a2e);align-items:center;justify-content:center;padding:2rem 1rem;overflow-y:auto;}
+.cr-box{background:#fff;border-radius:18px;padding:2.25rem;width:min(560px,100%);box-shadow:var(--shx);animation:rise .3s;}
+.cr-box h2{font-size:20px;font-weight:700;color:var(--grn);margin-bottom:.375rem;text-align:center;}
+.cr-box .sub{font-size:12px;color:var(--txt2);text-align:center;margin-bottom:1.5rem;}
+.step{border:1px solid var(--bdr);border-radius:var(--rl);padding:1.125rem 1.25rem;margin-bottom:.875rem;position:relative;}
+.step .sn{position:absolute;top:-11px;left:14px;background:var(--grn);color:#fff;border-radius:14px;font-size:10px;font-weight:700;padding:2px 10px;}
+.step h3{font-size:13px;font-weight:600;margin-bottom:.75rem;}
+.fg{display:flex;flex-direction:column;gap:4px;margin-bottom:.75rem;}
+.fg:last-child{margin-bottom:0;}
+.fg label{font-size:11px;font-weight:500;color:var(--txt2);}
+.fg input,.fg select{border:1px solid var(--bdr2);border-radius:var(--r);padding:8px 10px;font-size:13px;width:100%;color:var(--txt);background:#fff;}
+.fg input:focus,.fg select:focus{outline:none;border-color:var(--grn2);box-shadow:0 0 0 3px rgba(45,122,79,.1);}
+.fg2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.hint{font-size:10.5px;color:var(--txt3);margin-top:3px;line-height:1.5;}
+.key-box{font-family:'DM Mono',monospace;background:var(--grnl);border:1.5px dashed var(--grn2);border-radius:var(--r);padding:.625rem 1rem;font-size:15px;font-weight:700;color:var(--grn);letter-spacing:.14em;display:flex;align-items:center;justify-content:space-between;}
+.btn-full{width:100%;padding:12px;background:var(--grn);color:#fff;border:none;border-radius:var(--rl);font-size:14px;font-weight:700;cursor:pointer;margin-top:.5rem;transition:background .12s;}
+.btn-full:hover{background:var(--grn2);}
+.back-lnk{text-align:center;margin-top:1rem;color:rgba(255,255,255,.6);font-size:12.5px;cursor:pointer;}
+.back-lnk:hover{color:#fff;}
+
+/* ════════════════════════════════════════
+   PAGE 3: COMMITTEE LIST
+════════════════════════════════════════ */
+#pg-list{background:linear-gradient(155deg,#071a0e,#1a4a2e);align-items:center;justify-content:center;flex-direction:column;padding:2rem 1rem;}
+.cl-box{background:#fff;border-radius:18px;padding:2rem;width:min(580px,100%);box-shadow:var(--shx);animation:rise .25s;}
+.cl-box h2{font-size:18px;font-weight:700;color:var(--grn);margin-bottom:.375rem;}
+.cl-box p{font-size:12.5px;color:var(--txt2);margin-bottom:1.125rem;}
+.cl-search{border:1px solid var(--bdr2);border-radius:var(--r);padding:9px 12px;font-size:13px;width:100%;margin-bottom:1rem;}
+.cl-search:focus{outline:none;border-color:var(--grn2);}
+.cl-list{max-height:360px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;}
+.cl-item{border:1px solid var(--bdr);border-radius:var(--rl);padding:1rem 1.125rem;cursor:pointer;transition:all .12s;display:flex;justify-content:space-between;align-items:center;}
+.cl-item:hover{border-color:var(--grn2);background:var(--grnl);}
+.cl-name{font-size:14px;font-weight:600;}
+.cl-sub{font-size:11.5px;color:var(--txt2);margin-top:3px;}
+.cl-badge{font-size:10px;padding:2px 8px;border-radius:10px;background:var(--grnl);color:var(--grn);border:1px solid #b2ddc3;font-weight:600;}
+.cl-empty{text-align:center;padding:2rem;color:var(--txt3);font-size:13px;}
+
+/* ════════════════════════════════════════
+   PAGE 4: GATE (Login / Register)
+════════════════════════════════════════ */
+#pg-gate{background:linear-gradient(155deg,#071a0e,#1a4a2e);flex-direction:column;align-items:center;justify-content:center;padding:1.5rem 1rem;overflow-y:auto;}
+.g-banner{text-align:center;margin-bottom:1.375rem;color:#fff;}
+.g-icon{font-size:2.5rem;display:block;margin-bottom:.5rem;}
+.g-name{font-size:18px;font-weight:700;}
+.g-sub{font-size:12px;opacity:.6;margin-top:4px;}
+.g-code{display:inline-block;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:18px;font-size:10.5px;color:rgba(255,255,255,.75);padding:3px 12px;margin-top:8px;font-family:'DM Mono',monospace;}
+.g-card{background:#fff;border-radius:18px;width:min(450px,100%);overflow:hidden;box-shadow:var(--shm);}
+.g-tabs{display:flex;border-bottom:1px solid var(--bdr);}
+.g-tab{flex:1;padding:.875rem;text-align:center;font-size:13px;font-weight:500;cursor:pointer;color:var(--txt2);border-bottom:2px solid transparent;transition:all .12s;}
+.g-tab:hover{background:var(--sur2);}
+.g-tab.on{color:var(--grn);border-bottom-color:var(--grn);font-weight:600;}
+.g-body{padding:1.5rem;}
+.rcards{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:1rem;}
+.rc{border:1.5px solid var(--bdr);border-radius:var(--rl);padding:.75rem .375rem;cursor:pointer;text-align:center;transition:all .12s;user-select:none;}
+.rc:hover{border-color:var(--grn2);background:var(--grnl);}
+.rc.sel{border-color:var(--grn);background:var(--grnl);}
+.rc .ri{font-size:1.5rem;display:block;margin-bottom:.25rem;}
+.rc .rn{font-size:11.5px;font-weight:600;}
+.rc .rd{font-size:10px;color:var(--txt2);margin-top:1px;}
+.g-err{background:var(--redb);border:1px solid #f5c6c6;border-radius:var(--r);padding:.625rem .875rem;font-size:12.5px;color:var(--red);margin-bottom:.875rem;display:none;}
+.g-err.on{display:block;}
+.g-info{background:var(--blub);border:1px solid #b5c9ea;border-radius:var(--r);padding:.625rem .875rem;font-size:12px;color:var(--blu);margin-bottom:.875rem;}
+.ci{font-family:'DM Mono',monospace!important;font-size:15px!important;letter-spacing:.1em;text-align:center;font-weight:700!important;text-transform:uppercase;}
+.btn-gate{width:100%;padding:11px;background:var(--grn);color:#fff;border:none;border-radius:var(--rl);font-size:13.5px;font-weight:700;cursor:pointer;transition:background .12s;}
+.btn-gate:hover{background:var(--grn2);}
+.g-foot{text-align:center;font-size:11px;color:rgba(255,255,255,.4);margin-top:1rem;}
+
+/* ════════════════════════════════════════
+   PAGE 5: PENDING
+════════════════════════════════════════ */
+#pg-pending{background:linear-gradient(155deg,#0d1a2a,#1a3a6b);align-items:center;justify-content:center;padding:2rem 1rem;}
+.pend-box{background:#fff;border-radius:18px;padding:2.25rem;width:min(440px,100%);text-align:center;box-shadow:var(--shm);}
+.pend-icon{font-size:3.5rem;margin-bottom:1rem;display:block;animation:bob 2.5s ease-in-out infinite;}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.pend-box h2{font-size:18px;font-weight:700;color:var(--blu);margin-bottom:.625rem;}
+.pend-steps{background:var(--sur2);border-radius:var(--rl);padding:1rem;text-align:left;margin:.875rem 0 1.125rem;}
+.ps{display:flex;align-items:flex-start;gap:10px;padding:5px 0;font-size:12.5px;}
+
+/* ════════════════════════════════════════
+   PAGE 6: ADMIN PANEL
+════════════════════════════════════════ */
+#pg-admin{background:var(--bg);flex-direction:column;align-items:stretch;}
+.adm-wrap{display:flex;min-height:100vh;width:100%;}
+.adm-side{width:230px;background:var(--grn);color:#fff;display:flex;flex-direction:column;position:fixed;top:0;left:0;height:100vh;overflow-y:auto;z-index:50;}
+.adm-logo{padding:1.125rem 1.25rem .875rem;border-bottom:1px solid rgba(255,255,255,.1);}
+.adm-logo h1{font-size:13.5px;font-weight:600;line-height:1.35;}
+.adm-logo .org{font-size:11px;font-weight:700;color:#7ecb9a;margin-top:3px;}
+.adm-logo p{font-size:10px;opacity:.5;margin-top:2px;}
+.adm-user{padding:.625rem 1.25rem;background:rgba(255,255,255,.08);border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;gap:8px;}
+.adm-av{width:28px;height:28px;border-radius:50%;background:#f5c842;color:#5a3d00;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;}
+.adm-un{font-size:12px;font-weight:600;}.adm-ur{font-size:9.5px;opacity:.55;margin-top:1px;}
+.adm-sl{font-size:9px;letter-spacing:.12em;opacity:.4;text-transform:uppercase;padding:.5rem 1.25rem .2rem;}
+.adm-ni{display:flex;align-items:center;gap:9px;padding:.44rem 1.25rem;font-size:12.5px;cursor:pointer;opacity:.7;transition:all .12s;border-left:3px solid transparent;}
+.adm-ni:hover{opacity:.95;background:rgba(255,255,255,.07);}
+.adm-ni.act{opacity:1;background:rgba(255,255,255,.12);border-left-color:#7ecb9a;font-weight:500;}
+.apb{background:#e24b4a;color:#fff;border-radius:10px;font-size:9px;font-weight:700;padding:1px 5px;margin-left:auto;display:none;}
+.adm-foot{margin-top:auto;padding:.75rem 1.25rem;border-top:1px solid rgba(255,255,255,.1);}
+.adm-main{margin-left:230px;flex:1;padding:1.5rem;}
+.adm-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;}
+.adm-top h2{font-size:17px;font-weight:700;}
+
+/* ════════════════════════════════════════
+   PAGE 7: MB BOOK
+════════════════════════════════════════ */
+#pg-mb{background:var(--bg);flex-direction:column;align-items:stretch;}
+.mb-wrap{display:flex;min-height:100vh;width:100%;}
+.mb-side{width:230px;background:var(--grn);color:#fff;display:flex;flex-direction:column;position:fixed;top:0;left:0;height:100vh;overflow-y:auto;z-index:50;}
+.mb-logo{padding:1.125rem 1.25rem .875rem;border-bottom:1px solid rgba(255,255,255,.1);}
+.mb-logo h1{font-size:13px;font-weight:600;line-height:1.35;}
+.mb-logo .mb-comm{font-size:10.5px;font-weight:600;color:#7ecb9a;margin-top:2px;}
+.mb-logo .ver{font-family:'DM Mono',monospace;font-size:9.5px;background:rgba(255,255,255,.12);padding:2px 6px;border-radius:8px;display:inline-block;margin-top:5px;}
+.mb-ub{padding:.625rem 1.25rem;background:rgba(255,255,255,.08);border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;gap:8px;}
+.mb-av{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;}
+.av-e{background:#7ecb9a;color:#1a4a2e;}.av-c{background:#f5c842;color:#5a3d00;}.av-a{background:#c8b0f5;color:#2d0a6b;}
+.mb-un{font-size:12px;font-weight:600;}.mb-ur{font-size:10px;opacity:.6;margin-top:1px;}
+.nb-sec{padding:.625rem 0 .25rem;}
+.nb-lbl{font-size:9.5px;letter-spacing:.1em;opacity:.4;text-transform:uppercase;padding:0 1.25rem;margin-bottom:.25rem;}
+.nb-item{display:flex;align-items:center;gap:9px;padding:.44rem 1.25rem;font-size:12.5px;cursor:pointer;opacity:.7;transition:all .12s;border-left:3px solid transparent;}
+.nb-item:hover{opacity:.95;background:rgba(255,255,255,.07);}
+.nb-item.act{opacity:1;background:rgba(255,255,255,.12);border-left-color:#7ecb9a;font-weight:500;}
+.nb-icon{font-size:13px;width:16px;text-align:center;}
+.nb-badge{background:#e24b4a;color:#fff;border-radius:10px;font-size:9px;font-weight:700;padding:1px 5px;margin-left:auto;}
+.mb-foot{margin-top:auto;padding:.75rem 1.25rem;border-top:1px solid rgba(255,255,255,.1);}
+.btn-lo{font-size:11px;color:rgba(255,255,255,.6);background:none;border:1px solid rgba(255,255,255,.15);border-radius:var(--r);padding:5px 12px;cursor:pointer;width:100%;}
+.btn-lo:hover{color:#fff;}
+.mb-main{margin-left:230px;flex:1;display:flex;flex-direction:column;}
+.topbar{background:var(--sur);border-bottom:1px solid var(--bdr);padding:.75rem 1.5rem;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:40;}
+.topbar h2{font-size:15px;font-weight:600;}.topbar p{font-size:11.5px;color:var(--txt2);margin-top:2px;}
+.tb-right{display:flex;align-items:center;gap:8px;}
+.content{padding:1.5rem;flex:1;}
+/* notification bell */
+.nb-w{position:relative;}
+.nb-btn{cursor:pointer;padding:5px 7px;border-radius:var(--r);display:flex;align-items:center;background:none;border:none;}
+.nb-btn:hover{background:var(--sur2);}
+.nb-btn svg{width:19px;height:19px;}
+.ndot{position:absolute;top:3px;right:3px;width:8px;height:8px;background:#e24b4a;border-radius:50%;border:2px solid var(--sur);display:none;}
+.ndot.on{display:block;}
+.ndrop{position:absolute;top:calc(100% + 6px);right:0;width:300px;background:var(--sur);border:1px solid var(--bdr);border-radius:var(--rl);box-shadow:var(--shm);z-index:100;display:none;overflow:hidden;}
+.ndrop.open{display:block;}
+.ndh{padding:.75rem 1rem;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center;}
+.ndh span{font-size:13px;font-weight:600;}
+.ndc{font-size:11px;color:var(--blu);cursor:pointer;background:none;border:none;}
+.nitm{padding:.75rem 1rem;border-bottom:1px solid var(--bdr);cursor:pointer;}
+.nitm:last-child{border-bottom:none;}
+.nitm:hover{background:var(--sur2);}
+.nitm.unread{background:var(--blub);}
+
+/* ── SHARED COMPONENTS ── */
+.card{background:var(--sur);border:1px solid var(--bdr);border-radius:var(--rl);margin-bottom:1.125rem;box-shadow:var(--sh);overflow:hidden;}
+.ch{display:flex;align-items:center;justify-content:space-between;padding:.875rem 1.125rem;border-bottom:1px solid var(--bdr);flex-wrap:wrap;gap:8px;}
+.ct{font-size:13.5px;font-weight:600;}
+.cb{padding:1.125rem;}
+.mets{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.25rem;}
+.met{background:var(--sur);border:1px solid var(--bdr);border-radius:var(--rl);padding:.875rem 1rem;box-shadow:var(--sh);}
+.ml{font-size:10px;color:var(--txt2);font-weight:500;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;}
+.mv{font-size:21px;font-weight:700;}
+.mv-g{color:var(--grn2);}.mv-a{color:var(--amb);}.mv-r{color:var(--red);}.mv-b{color:var(--blu);}.mv-s{font-size:14px;}
+.tw{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+thead th{background:var(--sur2);text-align:left;padding:8px 10px;font-size:10.5px;font-weight:600;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--bdr);white-space:nowrap;}
+tbody td{padding:8px 10px;border-bottom:1px solid var(--bdr);vertical-align:middle;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover td{background:var(--sur2);}
+tfoot td{padding:9px 10px;font-weight:600;font-size:12.5px;background:var(--sur2);border-top:2px solid var(--bdr2);}
+.btn{padding:6px 13px;font-size:12px;border:1px solid var(--bdr2);border-radius:var(--r);cursor:pointer;background:var(--sur);color:var(--txt);font-weight:500;transition:all .12s;display:inline-flex;align-items:center;gap:5px;}
+.btn:hover{background:var(--sur2);}
+.btn-p{background:var(--grn);color:#fff;border-color:var(--grn);}.btn-p:hover{background:var(--grn2);}
+.btn-ok{background:var(--grnl);color:var(--grn);border-color:#b2ddc3;font-weight:600;}
+.btn-ng{background:var(--redb);color:var(--red);border-color:#f5c6c6;}
+.btn-del{border-color:#f5c6c6;color:var(--red);background:var(--redb);}
+.btn-at{background:var(--blub);color:var(--blu);border-color:#b5c9ea;}
+.btn-pr{background:#2d4a7a;color:#fff;border-color:#2d4a7a;}
+.btn-sm{padding:3px 9px;font-size:11px;}
+.btn-xs{padding:2px 7px;font-size:10.5px;}
+.pill{font-size:10.5px;padding:2px 8px;border-radius:14px;font-weight:500;display:inline-block;}
+.p-active,.p-approved,.p-ongoing,.p-completed{background:var(--grnl);color:var(--grn);border:1px solid #b2ddc3;}
+.p-pending,.p-submitted{background:var(--ambb);color:var(--amb);border:1px solid #f5dba0;}
+.p-rejected,.p-blocked,.p-suspended{background:var(--redb);color:var(--red);border:1px solid #f5c6c6;}
+.p-reviewing,.p-draft,.p-admin{background:var(--blub);color:var(--blu);border:1px solid #b5c9ea;}
+.mono{font-family:'DM Mono',monospace;font-size:12px;}
+.ew{font-size:10.5px;color:var(--txt2);font-style:italic;margin-top:2px;display:block;}
+.ib{border-radius:var(--r);padding:.625rem .875rem;font-size:12px;margin-bottom:.875rem;}
+.ib-b{background:var(--blub);border:1px solid #b5c9ea;color:var(--blu);}
+.ib-g{background:var(--grnl);border:1px solid #b2ddc3;color:var(--grn);}
+.ib-a{background:var(--ambb);border:1px solid #f5dba0;color:var(--amb);}
+.ib-r{background:var(--redb);border:1px solid #f5c6c6;color:var(--red);}
+.pb{height:5px;background:var(--sur2);border-radius:3px;overflow:hidden;}
+.pf{height:100%;border-radius:3px;background:var(--grn2);}
+.pf-a{background:#d4860f;}.pf-r{background:var(--red);}
+.empty{text-align:center;padding:2.5rem 1rem;color:var(--txt3);font-size:13px;}
+.ei{font-size:1.75rem;display:block;margin-bottom:.625rem;opacity:.4;}
+.fgs{display:flex;flex-direction:column;gap:4px;}
+.fgs label{font-size:11px;font-weight:500;color:var(--txt2);}
+.fgs input,.fgs select,.fgs textarea{font-size:12.5px;border:1px solid var(--bdr2);border-radius:var(--r);padding:7px 9px;background:var(--sur);color:var(--txt);}
+.fgs input:focus,.fgs select:focus,.fgs textarea:focus{outline:none;border-color:var(--grn2);}
+.fg2s{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.fg3s{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+.fg4s{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;}
+.ffall{grid-column:1/-1;}
+.az{border:1.5px dashed var(--bdr2);border-radius:var(--r);padding:.875rem;text-align:center;background:var(--sur2);cursor:pointer;transition:all .12s;}
+.az:hover,.az.dov{border-color:var(--blu);background:var(--blub);}
+.az input{display:none;}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:var(--r);border:1px solid var(--bdr);background:var(--sur);font-size:11px;cursor:pointer;max-width:200px;}
+.chip:hover{border-color:var(--blu);background:var(--blub);}
+.acount{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--blu);font-weight:500;cursor:pointer;padding:3px 7px;border-radius:var(--r);background:var(--blub);border:1px solid #b5c9ea;}
+.ns-box{background:var(--grnl);border:1.5px solid #b2ddc3;border-radius:var(--rl);padding:1rem;margin-top:.875rem;}
+.ns-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13px;}
+.ns-row.tot{border-top:1.5px solid var(--grn2);margin-top:4px;padding-top:8px;font-weight:700;font-size:14px;color:var(--grn);}
+.ns-lbl{color:var(--txt2);}
+.dr{display:grid;grid-template-columns:1fr 160px 30px;gap:8px;align-items:center;margin-bottom:7px;}
+.dr input{font-size:12.5px;border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 9px;background:var(--sur);}
+.wfbar{display:flex;align-items:center;margin-bottom:1rem;overflow-x:auto;}
+.wfs{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:75px;}
+.wfd{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid var(--bdr);background:var(--sur);font-weight:700;}
+.wfd-d{background:var(--grn2);border-color:var(--grn2);color:#fff;}
+.wfd-a{background:var(--ambb);border-color:var(--amb);color:var(--amb);}
+.wfd-r{background:var(--redb);border-color:var(--red);color:var(--red);}
+.wfl{font-size:10px;color:var(--txt2);text-align:center;}
+.wfln{flex:1;height:2px;background:var(--bdr);min-width:20px;}
+.wfln-d{background:var(--grn2);}
+.sr{display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:5px 0;border-bottom:1px solid var(--bdr);}
+.sr:last-child{border-bottom:none;}
+.ttag{font-size:10px;padding:2px 7px;border-radius:8px;background:var(--sur2);color:var(--txt2);border:1px solid var(--bdr);font-weight:500;}
+.mo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;align-items:flex-start;justify-content:center;padding:1.5rem 1rem;overflow-y:auto;backdrop-filter:blur(2px);}
+.mo.open{display:flex;}
+.mbox{background:var(--sur);border-radius:var(--rl);border:1px solid var(--bdr);padding:1.375rem;box-shadow:var(--shm);}
+.mbox.wm{width:min(660px,100%);}
+.mbox.ws{width:min(460px,100%);}
+.mh{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:.875rem;border-bottom:1px solid var(--bdr);}
+.mt{font-size:14px;font-weight:600;}
+.mf{display:flex;justify-content:flex-end;gap:8px;margin-top:1rem;padding-top:.875rem;border-top:1px solid var(--bdr);}
+.toast{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--grn);color:#fff;padding:.75rem 1.125rem;border-radius:var(--rl);font-size:12.5px;font-weight:500;box-shadow:var(--shm);z-index:9999;display:flex;align-items:center;gap:7px;max-width:320px;animation:rise .2s;}
+.toast.terr{background:var(--red);}.toast.tamb{background:var(--amb);}.toast.tblu{background:var(--blu);}
+.pop-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:300;align-items:center;justify-content:center;padding:1rem;}
+.pop-ov.open{display:flex;}
+.pop-box{background:var(--sur);border-radius:16px;padding:2rem;width:min(370px,100%);text-align:center;box-shadow:var(--shm);}
+.pop-ic{font-size:3rem;margin-bottom:.875rem;}
+.pop-box h3{font-size:17px;font-weight:700;margin-bottom:.5rem;}
+.pop-box p{font-size:13px;color:var(--txt2);line-height:1.6;margin-bottom:1.25rem;}
+.key-reveal{display:flex;align-items:center;gap:10px;background:var(--grnl);border:1.5px dashed var(--grn2);border-radius:var(--r);padding:.75rem 1rem;margin:.75rem 0;}
+.kv{font-family:'DM Mono',monospace;font-size:15px;font-weight:700;color:var(--grn);letter-spacing:.12em;flex:1;}
+.req-card{border:1px solid var(--bdr);border-radius:var(--rl);padding:1rem 1.125rem;margin-bottom:.875rem;}
+.req-card.urg{border-left:4px solid var(--amb);}
+.ip{border:1.5px dashed var(--bdr2);border-radius:var(--rl);padding:1.25rem;text-align:center;transition:all .15s;}
+.ip.dov{border-color:var(--grn2);background:var(--grnl);}
+.ip input{display:none;}
+.pws{overflow:auto;border:1px solid var(--bdr);border-radius:var(--r);max-height:220px;}
+.ptbl{width:100%;border-collapse:collapse;font-size:11.5px;}
+.ptbl th{background:var(--sur2);padding:6px 9px;text-align:left;font-size:10.5px;font-weight:600;color:var(--txt2);border-bottom:1px solid var(--bdr);position:sticky;top:0;}
+.ptbl td{padding:6px 9px;border-bottom:1px solid var(--bdr);}
+.ptbl tr.rok td:first-child{border-left:3px solid var(--grn2);}
+@media print{body>*:not(#pa){display:none!important;}#pa{display:block!important;}}
+#pa{display:none;}
+.pp{width:210mm;margin:0 auto;padding:15mm;font-family:'DM Sans',sans-serif;font-size:11pt;color:#000;}
+.pp-h{text-align:center;border-bottom:2px solid #000;padding-bottom:8px;margin-bottom:12px;}
+.pp-h h1{font-size:15pt;font-weight:700;}
+.pp-t{width:100%;border-collapse:collapse;margin-bottom:12px;font-size:9.5pt;}
+.pp-t th{background:#1a4a2e;color:#fff;padding:6px 8px;text-align:left;font-size:9pt;}
+.pp-t td{padding:5px 8px;border:1px solid #ccc;}
+.pp-t tfoot td{background:#e8f2ec;font-weight:700;border-top:2px solid #1a4a2e;}
+.pp-sum{border:1.5px solid #1a4a2e;border-radius:4px;padding:10px 12px;margin-bottom:12px;}
+.pp-sum h3{font-size:10pt;font-weight:700;margin-bottom:6px;color:#1a4a2e;}
+.pp-sr{display:flex;justify-content:space-between;font-size:9.5pt;padding:3px 0;border-bottom:1px solid #eee;}
+.pp-sr:last-child{border-bottom:none;font-weight:700;font-size:10.5pt;}
+.pp-sig{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:20px;}
+.pp-sig div{text-align:center;border-top:1px solid #000;padding-top:6px;font-size:9pt;}
+@media(max-width:768px){.mb-side{width:190px;}.mb-main{margin-left:190px;}.adm-side{width:190px;}.adm-main{margin-left:190px;}.fg2s,.fg3s,.fg4s{grid-template-columns:1fr;}.mets{grid-template-columns:repeat(2,1fr);}}
+</style>
+</head>
+<body>
+
+<!-- ════ PAGE 1: HOME ════ -->
+<div class="pg" id="pg-home">
+  <div class="h-logo">
+    <span class="hi">📗</span>
+    <h1>Electronic MB Book</h1>
+    <p>Measurement Book System · Each committee works in its own secure workspace</p>
+  </div>
+  <div class="h-cards">
+    <div class="h-card" onclick="goPage('pg-create');genKey()">
+      <span class="hci">🏗️</span>
+      <h2>Create new committee</h2>
+      <p>Set up your committee's private workspace. You become admin and invite your team.</p>
+      <span class="hcb">Create committee →</span>
+    </div>
+    <div class="h-card" onclick="goPage('pg-list');renderList()">
+      <span class="hci">🔍</span>
+      <h2>Join existing committee</h2>
+      <p>Find your committee and request access. You need the committee key from your admin.</p>
+      <span class="hcb">Browse &amp; join →</span>
+    </div>
+    <div class="h-card" onclick="goPage('pg-list');renderList()">
+      <span class="hci">🔐</span>
+      <h2>Sign in to your committee</h2>
+      <p>Already a registered member? Find your committee and sign in directly.</p>
+      <span class="hcb">Sign in →</span>
+    </div>
+  </div>
+  <div class="h-foot">Each committee's data is completely private · Members only see their own committee's records</div>
+</div>
+
+<!-- ════ PAGE 2: CREATE ════ -->
+<div class="pg" id="pg-create">
+  <div class="cr-box">
+    <h2>🏗️ Create new committee</h2>
+    <p class="sub">Set up your private MB Book workspace</p>
+    <div class="step">
+      <span class="sn">Step 1 — Committee</span>
+      <h3>Committee details</h3>
+      <div class="fg2">
+        <div class="fg"><label>Committee name *</label><input id="cn-name" placeholder="e.g. CQD Division II"></div>
+        <div class="fg"><label>Short code (3–5 letters) *</label><input id="cn-code" maxlength="5" placeholder="CQD" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"></div>
+        <div class="fg"><label>Department / Ministry</label><input id="cn-dept" placeholder="Ministry of Works"></div>
+        <div class="fg"><label>Location</label><input id="cn-loc" placeholder="Thimphu, Bhutan"></div>
+      </div>
+    </div>
+    <div class="step">
+      <span class="sn">Step 2 — Admin account</span>
+      <h3>You will be the admin</h3>
+      <div class="fg2">
+        <div class="fg"><label>Your full name *</label><input id="cn-an" placeholder="Chief Engineer name"></div>
+        <div class="fg"><label>Your email *</label><input id="cn-ae" type="email" placeholder="admin@email.com"></div>
+        <div class="fg"><label>Password *</label><input id="cn-ap" type="password" placeholder="Min. 6 characters"></div>
+        <div class="fg"><label>Confirm password *</label><input id="cn-ap2" type="password" placeholder="Repeat password"></div>
+      </div>
+    </div>
+    <div class="step">
+      <span class="sn">Step 3 — Committee key</span>
+      <h3>Secret key for your team</h3>
+      <p style="font-size:12.5px;color:var(--txt2);margin-bottom:.875rem;">Every member must enter this key to register or sign in. Share it only with your authorised team.</p>
+      <div class="key-box"><span id="gk">—</span><button class="btn btn-sm" onclick="genKey()">🔄 New key</button></div>
+      <span class="hint" style="margin-top:6px;display:block;">⚠ Note this down before saving.</span>
+    </div>
+    <div id="cn-err" class="g-err"></div>
+    <button class="btn-full" onclick="createComm()">🚀 Create committee</button>
+  </div>
+  <div class="back-lnk" onclick="goPage('pg-home')">← Back</div>
+</div>
+
+<!-- ════ PAGE 3: COMMITTEE LIST ════ -->
+<div class="pg" id="pg-list">
+  <div class="cl-box">
+    <h2>🔍 Find your committee</h2>
+    <p>Select your committee to sign in or request access.</p>
+    <input class="cl-search" id="cl-search" placeholder="Search by name or code..." oninput="renderList(this.value)">
+    <div class="cl-list" id="cl-list"></div>
+  </div>
+  <div class="back-lnk" onclick="goPage('pg-home')">← Back</div>
+</div>
+
+<!-- ════ PAGE 4: GATE (Login / Register) ════ -->
+<div class="pg" id="pg-gate">
+  <div class="g-banner">
+    <span class="g-icon" id="gi">📗</span>
+    <div class="g-name" id="gn">Committee MB Book</div>
+    <div class="g-sub" id="gs">Authorised members only</div>
+    <span class="g-code" id="gc">KEY REQUIRED</span>
+  </div>
+  <div class="g-card">
+    <div class="g-tabs">
+      <div class="g-tab on" id="t-li" onclick="gTab('li')">🔐 Sign in</div>
+      <div class="g-tab" id="t-rg" onclick="gTab('rg')">📋 Request access</div>
+    </div>
+
+    <!-- LOGIN PANE -->
+    <div id="p-li" class="g-body">
+      <div class="g-err" id="lerr"></div>
+      <div class="rcards">
+        <div class="rc sel" id="rl-e" onclick="selRoleL('engineer')"><span class="ri">👷</span><div class="rn">Engineer</div><div class="rd">Submit bills</div></div>
+        <div class="rc" id="rl-c" onclick="selRoleL('chief')"><span class="ri">🏛️</span><div class="rn">Chief Engr.</div><div class="rd">Approve</div></div>
+        <div class="rc" id="rl-a" onclick="selRoleL('accounts')"><span class="ri">💼</span><div class="rn">Accounts</div><div class="rd">Finance</div></div>
+      </div>
+      <div class="fgs" style="margin-bottom:.75rem;"><label>Email *</label><input id="li-em" type="email" placeholder="your@email.com" onkeydown="if(event.key==='Enter')doLogin()"></div>
+      <div class="fgs" style="margin-bottom:.75rem;"><label>Password *</label><input id="li-pw" type="password" placeholder="Your password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+      <div class="fgs" style="margin-bottom:1rem;"><label>Committee key * <span style="font-size:10px;color:var(--txt3);">(from your admin)</span></label>
+        <input id="li-key" class="ci" placeholder="CODE-XXXX-XXXX" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <button class="btn-gate" onclick="doLogin()">Sign in →</button>
+      <div style="text-align:center;margin-top:.875rem;font-size:12px;color:var(--txt2);">New? <a style="color:var(--blu);cursor:pointer;font-weight:500;" onclick="gTab('rg')">Request access →</a></div>
+    </div>
+
+    <!-- REGISTER PANE -->
+    <div id="p-rg" class="g-body" style="display:none;">
+      <div class="g-info">📋 Request access. Admin will approve before you can sign in.</div>
+      <div class="g-err" id="rerr"></div>
+      <div class="rcards">
+        <div class="rc sel" id="rr-e" onclick="selRoleR('engineer')"><span class="ri">👷</span><div class="rn">Engineer</div><div class="rd">Submit bills</div></div>
+        <div class="rc" id="rr-c" onclick="selRoleR('chief')"><span class="ri">🏛️</span><div class="rn">Chief Engr.</div><div class="rd">Approve</div></div>
+        <div class="rc" id="rr-a" onclick="selRoleR('accounts')"><span class="ri">💼</span><div class="rn">Accounts</div><div class="rd">Finance</div></div>
+      </div>
+      <div class="fg2s" style="margin-bottom:.75rem;">
+        <div class="fgs"><label>Full name *</label><input id="ri-nm" placeholder="Your full name"></div>
+        <div class="fgs"><label>Email *</label><input id="ri-em" type="email" placeholder="your@email.com"></div>
+        <div class="fgs"><label>Designation</label><input id="ri-de" placeholder="e.g. Asst. Engineer"></div>
+        <div class="fgs"><label>Division</label><input id="ri-dv" placeholder="e.g. Division II"></div>
+      </div>
+      <div class="fgs" style="margin-bottom:.75rem;"><label>Password * (min. 6 chars)</label><input id="ri-pw" type="password" placeholder="Set your password"></div>
+      <div class="fgs" style="margin-bottom:1rem;"><label>Committee key * <span style="font-size:10px;color:var(--txt3);">(from admin)</span></label>
+        <input id="ri-key" class="ci" placeholder="CODE-XXXX-XXXX" oninput="this.value=this.value.toUpperCase()">
+        <span class="hint">Without the correct key you cannot register.</span>
+      </div>
+      <button class="btn-gate" onclick="doRegister()">Submit access request →</button>
+      <div style="text-align:center;margin-top:.875rem;font-size:12px;color:var(--txt2);">Already a member? <a style="color:var(--blu);cursor:pointer;font-weight:500;" onclick="gTab('li')">Sign in →</a></div>
+    </div>
+  </div>
+  <div class="g-foot">🔒 <span id="gfn">MB Book</span> · Committee key + Admin approval required</div>
+  <div class="back-lnk" onclick="goPage('pg-list');renderList()">← Back to committee list</div>
+</div>
+
+<!-- ════ PAGE 5: PENDING ════ -->
+<div class="pg" id="pg-pending">
+  <div class="pend-box">
+    <span class="pend-icon">⏳</span>
+    <h2>Access request submitted</h2>
+    <p id="pend-msg">Your request has been submitted and is awaiting admin approval.</p>
+    <div class="pend-steps">
+      <div class="ps"><span>✅</span><span>Committee key verified — you are in the right committee</span></div>
+      <div class="ps"><span>⏳</span><span>Admin reviewing your request — usually within 1 working day</span></div>
+      <div class="ps"><span>🔔</span><span>Once approved, sign in with email + password + committee key</span></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+      <button class="btn btn-p btn-sm" onclick="goPage('pg-gate')">← Back to sign in</button>
+      <button class="btn btn-sm" onclick="checkStatus()">🔄 Check status</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ PAGE 6: ADMIN PANEL ════ -->
+<div class="pg" id="pg-admin">
+<div class="adm-wrap">
+  <aside class="adm-side">
+    <div class="adm-logo">
+      <h1>MB Book Admin</h1>
+      <div class="org" id="adm-org">—</div>
+      <p>Committee administrator</p>
+    </div>
+    <div class="adm-user">
+      <div class="adm-av" id="adm-av">A</div>
+      <div><div class="adm-un" id="adm-un">Admin</div><div class="adm-ur">Administrator</div></div>
+    </div>
+    <div class="adm-sl">Overview</div>
+    <div class="adm-ni act" data-adm="dash">📊 Dashboard</div>
+    <div class="adm-sl">Access management</div>
+    <div class="adm-ni" data-adm="pend">⏳ Pending <span class="apb" id="adm-pb"></span></div>
+    <div class="adm-ni" data-adm="users">👥 Members</div>
+    <div class="adm-ni" data-adm="log">📋 Access log</div>
+    <div class="adm-sl">Settings</div>
+    <div class="adm-ni" data-adm="settings">⚙️ Settings</div>
+    <div class="adm-ni" data-adm="key">🔑 Committee key</div>
+    <div class="adm-sl">MB Book</div>
+    <div class="adm-ni" onclick="openMB('engineer')">👷 Open as Engineer</div>
+    <div class="adm-ni" onclick="openMB('chief')">🏛️ Open as Chief Engr.</div>
+    <div class="adm-ni" onclick="openMB('accounts')">💼 Open as Accounts</div>
+    <div class="adm-foot">
+      <button class="btn-lo" onclick="doLogout()">Sign out</button>
+    </div>
+  </aside>
+  <main class="adm-main">
+    <div class="adm-top">
+      <div><h2 id="adm-ph">Dashboard</h2><p id="adm-pp" style="font-size:11.5px;color:var(--txt2);margin-top:2px;">Committee overview</p></div>
+      <button class="btn btn-sm btn-del" onclick="doLogout()">Sign out</button>
+    </div>
+    <div id="adm-content"></div>
+  </main>
+</div>
+</div>
+
+<!-- ════ PAGE 7: MB BOOK ════ -->
+<div class="pg" id="pg-mb">
+<div class="mb-wrap">
+  <aside class="mb-side">
+    <div class="mb-logo">
+      <h1>Electronic MB Book</h1>
+      <div class="mb-comm" id="mb-comm">—</div>
+      <span class="ver">v7.0</span>
+    </div>
+    <div class="mb-ub">
+      <div class="mb-av" id="mb-av">E</div>
+      <div><div class="mb-un" id="mb-un">User</div><div class="mb-ur" id="mb-ur">Role</div></div>
+    </div>
+    <nav id="mb-nav"></nav>
+    <div class="mb-foot"><button class="btn-lo" onclick="doLogout()">Sign out</button></div>
+  </aside>
+  <main class="mb-main">
+    <div class="topbar">
+      <div><h2 id="mb-pt">Dashboard</h2><p id="mb-ps" style="font-size:11.5px;color:var(--txt2);margin-top:2px;">Overview</p></div>
+      <div class="tb-right">
+        <div class="nb-w">
+          <button class="nb-btn" id="nb-btn" onclick="toggleNotif()">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+            <span class="ndot" id="ndot"></span>
+          </button>
+          <div class="ndrop" id="ndrop">
+            <div class="ndh"><span>Notifications</span><button class="ndc" onclick="markRead()">Mark all read</button></div>
+            <div id="nlist"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="content" id="mb-content"></div>
+  </main>
+</div>
+</div>
+
+<!-- MODALS -->
+<div id="m-rej" class="mo"><div class="mbox ws">
+  <div class="mh"><span class="mt">Reject RA Bill</span><button class="btn btn-sm" onclick="closeM('m-rej')">✕</button></div>
+  <div class="fgs"><label>Reason *</label><textarea id="rej-t" rows="4" style="font-size:12.5px;border:1px solid var(--bdr2);border-radius:var(--r);padding:8px 10px;width:100%;resize:vertical;"></textarea></div>
+  <div class="mf"><button class="btn" onclick="closeM('m-rej')">Cancel</button><button class="btn btn-ng" onclick="confirmReject()">Reject</button></div>
+</div></div>
+
+<div id="m-adduser" class="mo"><div class="mbox ws">
+  <div class="mh"><span class="mt">Add member manually</span><button class="btn btn-sm" onclick="closeM('m-adduser')">✕</button></div>
+  <div class="fg2s" style="gap:10px;margin-bottom:.875rem;">
+    <div class="fgs"><label>Full name *</label><input id="au-nm" placeholder="Full name"></div>
+    <div class="fgs"><label>Email *</label><input id="au-em" type="email" placeholder="email@org.com"></div>
+    <div class="fgs"><label>Designation</label><input id="au-de" placeholder="Designation"></div>
+    <div class="fgs"><label>Division</label><input id="au-dv" placeholder="Division"></div>
+    <div class="fgs"><label>Role *</label><select id="au-rl"><option value="engineer">Engineer</option><option value="chief">Chief Engineer</option><option value="accounts">Accounts</option></select></div>
+    <div class="fgs"><label>Password *</label><input id="au-pw" type="password" placeholder="Temp password"></div>
+  </div>
+  <div class="mf"><button class="btn" onclick="closeM('m-adduser')">Cancel</button><button class="btn btn-p" onclick="addUserManual()">Add member</button></div>
+</div></div>
+
+<div id="m-fv" class="mo"><div class="mbox wm">
+  <div class="mh"><span class="mt" id="fvt">Files</span><div style="display:flex;gap:8px;"><button class="btn btn-at btn-sm" id="fv-add-btn">+ Add files</button><input type="file" id="fv-add-inp" multiple style="display:none;" onchange="fvMore(event)"><button class="btn btn-sm" onclick="closeM('m-fv')">✕</button></div></div>
+  <div id="fvb"></div>
+</div></div>
+
+<div id="m-img" class="mo"><div class="mbox wm" style="text-align:center;">
+  <div class="mh"><span class="mt" id="imgn">Preview</span><button class="btn btn-sm" onclick="closeM('m-img')">✕</button></div>
+  <img id="imgs" src="" style="max-width:100%;max-height:60vh;border-radius:var(--r);border:1px solid var(--bdr);">
+  <div class="mf" style="justify-content:center;"><button class="btn btn-p" onclick="dlImg()">⬇ Download</button><button class="btn" onclick="closeM('m-img')">Close</button></div>
+</div></div>
+
+<div class="pop-ov" id="pop"><div class="pop-box">
+  <div class="pop-ic" id="pop-ic">🔔</div>
+  <h3 id="pop-ti">Notification</h3>
+  <p id="pop-ms">Message</p>
+  <button class="btn btn-p" onclick="document.getElementById('pop').classList.remove('open')">OK</button>
+</div></div>
+
+<div id="pa"></div>
+
+<script>
+// ════════════════════════════════════════════════════
+//  STORAGE (per-committee isolation)
+// ════════════════════════════════════════════════════
+const PORTAL_KEY='mbbook_portal_v2';
+function getLs(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;}}
+function setLs(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
+function getPortal(){return getLs(PORTAL_KEY)||{committees:[]};}
+function savePortal(p){setLs(PORTAL_KEY,p);}
+function getCommData(id){return getLs('mbc_'+id);}
+function saveCommData(id,d){setLs('mbc_'+id,d);}
+function getMBData(id){
+  // First get from localStorage (immediate)
+  const d=getLs('mbdata_'+id)||{};
+  return Object.assign({projects:[],boq:[],meas:[],budget:[],hind:[],dev:[],siteOrders:[],raBills:[],pending:[],accountsLog:[],payments:[],advances:[],users:[],notifs:{}},d);
+}
+function getMBDataFromCloud(id, callback){
+  // Load from Firebase cloud (may take 1-2 seconds)
+  loadDFirebase(id, function(cloudData){
+    if(cloudData && Object.keys(cloudData).length > 0){
+      // Merge cloud data (cloud is authoritative)
+      const local = getMBData(id);
+      const merged = Object.assign(local, cloudData);
+      saveMBData(id, merged); // update local cache
+      callback(merged);
+    } else {
+      callback(getMBData(id));
+    }
+  });
+}
+function saveMBData(id,d){setLs('mbdata_'+id,d);}
+
+// ════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════
+let CU=null;          // current user
+let CC=null;          // current committee meta
+let CCD=null;         // current committee data (users, log)
+let MBD=null;         // MB Book data for this committee
+let selRL='engineer'; // role selected in login tab
+let selRR='engineer'; // role selected in register tab
+let gKey='';          // generated key during create
+let rejId=null;       // pending rejection bill id
+let PF={};            // pending file uploads
+let FVC={};           // file viewer context
+let tmpBoq=[];        // BOQ parse buffer
+let _deds=[];         // RA deductions
+
+// ════════════════════════════════════════════════════
+//  UTILITIES
+// ════════════════════════════════════════════════════
+function goPage(id){document.querySelectorAll('.pg').forEach(p=>p.classList.remove('on'));document.getElementById(id).classList.add('on');}
+function toast(msg,cls=''){const t=document.createElement('div');t.className='toast '+(cls||'');t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),4200);}
+function showPop(ic,ti,ms){document.getElementById('pop-ic').textContent=ic;document.getElementById('pop-ti').textContent=ti;document.getElementById('pop-ms').textContent=ms;document.getElementById('pop').classList.add('open');}
+function closeM(id){document.getElementById(id).classList.remove('open');}
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+function hashPw(pw){let h=5381;for(let i=0;i<pw.length;i++){h=((h<<5)+h)+pw.charCodeAt(i);h|=0;}return'H'+Math.abs(h).toString(36)+(pw.length*13).toString(36);}
+function setErr(id,msg){const e=document.getElementById(id);if(e){e.textContent=msg;e.classList.add('on');}}
+function clearErr(id){const e=document.getElementById(id);if(e)e.classList.remove('on');}
+function addLog(action,user,detail,status){if(!CCD)return;if(!CCD.log)CCD.log=[];CCD.log.unshift({action,user,detail,status,time:new Date().toLocaleString('en-GB'),ts:Date.now()});if(CCD.log.length>200)CCD.log=CCD.log.slice(0,200);saveCommData(CC.id,CCD);}
+function numToWords(n){if(!n||isNaN(n))return'Zero';const ones=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];const tens=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];function h(n){if(!n)return'';if(n<20)return ones[n]+' ';if(n<100)return tens[Math.floor(n/10)]+(n%10?' '+ones[n%10]:'')+' ';return ones[Math.floor(n/100)]+' Hundred '+h(n%100);}let s='',num=Math.floor(Math.abs(n));if(num>=1e9){s+=h(Math.floor(num/1e9))+'Billion ';num%=1e9;}if(num>=1e6){s+=h(Math.floor(num/1e6))+'Million ';num%=1e6;}if(num>=1e3){s+=h(Math.floor(num/1e3))+'Thousand ';num%=1e3;}s+=h(num);const dec=Math.round((Math.abs(n)-Math.floor(Math.abs(n)))*100);return(n<0?'Minus ':'')+s.trim()+(dec?' and '+h(dec).trim()+' Chhertum':' Ngultrum Only');}
+const fmt=n=>Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const gp=id=>MBD.projects.find(p=>p.id===id);
+const gpn=id=>{const p=gp(id);return p?p.name:'—';};
+function saveD(){
+  if(!CC||!MBD) return;
+  // Save to localStorage (fast, instant)
+  saveMBData(CC.id, MBD);
+  // Save to Firebase (permanent, shared across all devices)
+  saveDFirebase(CC.id, MBD);
+}
+document.addEventListener('click',function(e){const nb=document.getElementById('nb-btn'),nd=document.getElementById('ndrop');if(nb&&nd&&!nb.contains(e.target)&&!nd.contains(e.target))nd.classList.remove('open');});
+
+// ════════════════════════════════════════════════════
+//  EMAIL
+// ════════════════════════════════════════════════════
+let EMAIL_CFG={svc:localStorage.getItem('mb_em_svc')||'',tpl:localStorage.getItem('mb_em_tpl')||'',key:localStorage.getItem('mb_em_key')||''};
+function emailOk(){return!!(EMAIL_CFG.svc&&EMAIL_CFG.tpl&&EMAIL_CFG.key);}
+function sendEmail(toName,toEmail,subject,body){
+  if(!toEmail||!toEmail.includes('@')){return;}
+  if(!emailOk()){toast('📧 Email not configured. Set up EmailJS from Dashboard.','tamb');return;}
+  try{emailjs.init({publicKey:EMAIL_CFG.key});emailjs.send(EMAIL_CFG.svc,EMAIL_CFG.tpl,{to_name:toName,to_email:toEmail,subject,message:body,from_name:'Electronic MB Book'}).then(()=>toast('📧 Email sent to '+toName)).catch(()=>toast('⚠ Email failed. Check EmailJS config.','tamb'));}catch(e){toast('⚠ EmailJS error.','tamb');}
+}
+function sendToRole(role,subject,body){(MBD.users||[]).filter(u=>u.role===role&&u.email).forEach(u=>sendEmail(u.name,u.email,subject,body));}
+function getUserEmail(name){const u=(MBD.users||[]).find(x=>x.name===name);return u?u.email:'';}
+
+// ════════════════════════════════════════════════════
+//  KEY GENERATOR
+// ════════════════════════════════════════════════════
+function genKey(){const c='ABCDEFGHJKLMNPQRSTUVWXYZ2345679';const seg=n=>Array.from({length:n},()=>c[Math.floor(Math.random()*c.length)]).join('');const pfx=(document.getElementById('cn-code')?.value||'COMM').slice(0,4)||'COMM';gKey=pfx+'-'+seg(4)+'-'+seg(4);const el=document.getElementById('gk');if(el)el.textContent=gKey;return gKey;}
+
+// ════════════════════════════════════════════════════
+//  COMMITTEE LIST
+// ════════════════════════════════════════════════════
+function renderList(search=''){
+  const portal=getPortal();
+  const el=document.getElementById('cl-list');if(!el)return;
+  let comms=portal.committees;
+  if(search)comms=comms.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.code.toLowerCase().includes(search.toLowerCase()));
+  if(!comms.length){el.innerHTML='<div class="cl-empty">No committees found.<br><br><button class="btn btn-p btn-sm" onclick="goPage(\'pg-create\');genKey()">Create new committee →</button></div>';return;}
+  el.innerHTML=comms.map(function(c){
+    const d=getCommData(c.id);
+    const members=(d&&d.users?d.users.filter(u=>u.status==='active').length:1);
+    return '<div class="cl-item" onclick="selectComm(\''+c.id+'\')">'
+      +'<div><div class="cl-name">'+c.name+'</div><div class="cl-sub">'+c.code+(c.dept?' · '+c.dept:'')+'</div></div>'
+      +'<div><span class="cl-badge">'+members+' member'+(members!==1?'s':'')+'</span></div>'
+      +'</div>';
+  }).join('');
+}
+
+function selectComm(id){
+  const portal=getPortal();
+  CC=portal.committees.find(c=>c.id===id);
+  CCD=getCommData(id);
+  if(!CC||!CCD){toast('Committee not found.','terr');return;}
+  document.getElementById('gi').textContent='📗';
+  document.getElementById('gn').textContent=CC.name;
+  document.getElementById('gs').textContent=CC.code+(CC.dept?' · '+CC.dept:'');
+  document.getElementById('gc').textContent=CC.code+' · KEY REQUIRED';
+  document.getElementById('gfn').textContent=CC.name;
+  gTab('li');
+  goPage('pg-gate');
+}
+
+// ════════════════════════════════════════════════════
+//  GATE TABS & ROLE SELECTION
+// ════════════════════════════════════════════════════
+function gTab(t){
+  const isL=t==='li';
+  document.getElementById('t-li').classList.toggle('on',isL);
+  document.getElementById('t-rg').classList.toggle('on',!isL);
+  document.getElementById('p-li').style.display=isL?'':'none';
+  document.getElementById('p-rg').style.display=isL?'none':'';
+  clearErr('lerr');clearErr('rerr');
+}
+function selRoleL(r){selRL=r;['e','c','a'].forEach(x=>{const el=document.getElementById('rl-'+x);if(el)el.classList.remove('sel');});const el=document.getElementById('rl-'+{engineer:'e',chief:'c',accounts:'a'}[r]);if(el)el.classList.add('sel');}
+function selRoleR(r){selRR=r;['e','c','a'].forEach(x=>{const el=document.getElementById('rr-'+x);if(el)el.classList.remove('sel');});const el=document.getElementById('rr-'+{engineer:'e',chief:'c',accounts:'a'}[r]);if(el)el.classList.add('sel');}
+
+// ════════════════════════════════════════════════════
+//  CREATE COMMITTEE
+// ════════════════════════════════════════════════════
+function createComm(){
+  clearErr('cn-err');
+  const name=(document.getElementById('cn-name')?.value||'').trim();
+  const code=(document.getElementById('cn-code')?.value||'').trim().toUpperCase();
+  const dept=(document.getElementById('cn-dept')?.value||'').trim();
+  const loc=(document.getElementById('cn-loc')?.value||'').trim();
+  const an=(document.getElementById('cn-an')?.value||'').trim();
+  const ae=(document.getElementById('cn-ae')?.value||'').trim().toLowerCase();
+  const ap=document.getElementById('cn-ap')?.value||'';
+  const ap2=document.getElementById('cn-ap2')?.value||'';
+  if(!name||!code){setErr('cn-err','Name and code required.');return;}
+  if(!an||!ae){setErr('cn-err','Admin name and email required.');return;}
+  if(!ap||ap.length<6){setErr('cn-err','Password must be at least 6 characters.');return;}
+  if(ap!==ap2){setErr('cn-err','Passwords do not match.');return;}
+  if(!gKey){genKey();}
+  const portal=getPortal();
+  if(portal.committees.find(c=>c.code===code)){setErr('cn-err','Code "'+code+'" already taken. Choose another.');return;}
+  const id=uid();
+  const commMeta={id,name,code,dept,loc,key:gKey,createdAt:new Date().toISOString()};
+  const commData={id,users:[{id:uid(),name:an,email:ae,password:hashPw(ap),role:'admin',designation:'System Administrator',division:'',status:'active',addedBy:'Setup',addedAt:new Date().toLocaleString('en-GB'),lastLogin:null}],log:[{action:'CREATED',user:ae,detail:'Committee created: '+name,status:'success',time:new Date().toLocaleString('en-GB'),ts:Date.now()}]};
+  saveCommData(id,commData);
+  portal.committees.push(commMeta);
+  savePortal(portal);
+  CC=commMeta;CCD=commData;
+  toast('✅ Committee "'+name+'" created!');
+  // Go to gate pre-filled
+  document.getElementById('gi').textContent='📗';
+  document.getElementById('gn').textContent=name;
+  document.getElementById('gs').textContent=code+(dept?' · '+dept:'');
+  document.getElementById('gc').textContent=code+' · KEY REQUIRED';
+  document.getElementById('gfn').textContent=name;
+  setTimeout(function(){document.getElementById('li-em').value=ae;document.getElementById('li-key').value=gKey;},100);
+  gTab('li');
+  goPage('pg-gate');
+}
+
+// ════════════════════════════════════════════════════
+//  LOGIN
+// ════════════════════════════════════════════════════
+function doLogin(){
+  clearErr('lerr');
+  if(!CC||!CCD){setErr('lerr','No committee selected. Go back and pick your committee.');return;}
+  const email=(document.getElementById('li-em')?.value||'').trim().toLowerCase();
+  const pw=document.getElementById('li-pw')?.value||'';
+  const key=(document.getElementById('li-key')?.value||'').trim().toUpperCase();
+  if(!email||!pw||!key){setErr('lerr','Please fill in email, password and committee key.');return;}
+  // Check key
+  if(key!==CC.key){setErr('lerr','Wrong committee key. Ask your admin for the correct key.');addLog('LOGIN_FAIL',email,'Wrong key','fail');return;}
+  // Find user
+  const user=CCD.users.find(u=>u.email===email);
+  if(!user){setErr('lerr','No account found for this email. Use "Request access" to register.');addLog('LOGIN_FAIL',email,'User not found','fail');return;}
+  if(user.status==='pending'){addLog('LOGIN_PENDING',email,'Pending user','fail');document.getElementById('pend-msg').textContent='Your access request for '+CC.name+' is still pending admin approval. Submitted: '+user.addedAt;goPage('pg-pending');return;}
+  if(user.status==='blocked'){setErr('lerr','Your account is blocked. Contact your admin.');return;}
+  if(hashPw(pw)!==user.password){setErr('lerr','Wrong password. Please try again.');addLog('LOGIN_FAIL',email,'Wrong password','fail');return;}
+  // Role check (admin can open any page)
+  if(user.role!=='admin'&&user.role!==selRL){setErr('lerr','Your role is "'+user.role+'". Please select the correct role above.');return;}
+  // SUCCESS
+  user.lastLogin=new Date().toLocaleString('en-GB');
+  saveCommData(CC.id,CCD);
+  addLog('LOGIN',email,'Signed in as '+user.role,'success');
+  CU=user;
+  MBD=getMBData(CC.id);
+  // Register in MBD users for email notifications
+  if(!MBD.users.find(u=>u.email===email)){MBD.users.push({name:user.name,email:user.email,role:user.role,division:user.division||'',designation:user.designation||'',lastLogin:new Date().toLocaleString('en-GB')});}
+  else{const mu=MBD.users.find(u=>u.email===email);mu.lastLogin=new Date().toLocaleString('en-GB');mu.role=user.role;}
+  saveD();
+  if(user.role==='admin'){launchAdmin();}
+  else{launchMB(user.role==='admin'?selRL:user.role);}
+}
+
+// ════════════════════════════════════════════════════
+//  REGISTER
+// ════════════════════════════════════════════════════
+function doRegister(){
+  clearErr('rerr');
+  if(!CC||!CCD){setErr('rerr','No committee selected.');return;}
+  const name=(document.getElementById('ri-nm')?.value||'').trim();
+  const email=(document.getElementById('ri-em')?.value||'').trim().toLowerCase();
+  const pw=document.getElementById('ri-pw')?.value||'';
+  const key=(document.getElementById('ri-key')?.value||'').trim().toUpperCase();
+  const des=(document.getElementById('ri-de')?.value||'').trim();
+  const div=(document.getElementById('ri-dv')?.value||'').trim();
+  if(!name||!email||!pw||!key){setErr('rerr','All fields marked * are required.');return;}
+  if(pw.length<6){setErr('rerr','Password must be at least 6 characters.');return;}
+  if(key!==CC.key){setErr('rerr','Wrong committee key. You cannot register without the correct key from your admin.');addLog('REG_FAIL',email,'Wrong key','fail');return;}
+  if(CCD.users.find(u=>u.email===email)){setErr('rerr','An account with this email already exists. Sign in instead.');return;}
+  const reqId='REQ-'+Date.now().toString(36).toUpperCase();
+  CCD.users.push({id:uid(),reqId,name,email,password:hashPw(pw),role:selRR,designation:des,division:div,status:'pending',addedBy:'Self-registration',addedAt:new Date().toLocaleString('en-GB'),lastLogin:null});
+  saveCommData(CC.id,CCD);
+  addLog('REGISTER',email,'Registered as '+selRR+' (pending)','pending');
+  document.getElementById('pend-msg').textContent='Your request to join '+CC.name+' as '+selRR+' has been submitted. Request ID: '+reqId;
+  goPage('pg-pending');
+}
+
+function checkStatus(){
+  if(!CC||!CCD){toast('Go back and select your committee first.','tamb');return;}
+  const email=(document.getElementById('li-em')?.value||document.getElementById('ri-em')?.value||'').trim().toLowerCase();
+  const user=CCD.users.find(u=>u.email===email);
+  if(!user){toast('No account found for that email.','tamb');return;}
+  if(user.status==='active'){toast('✅ Your account is approved! Go to sign in.');goPage('pg-gate');gTab('li');}
+  else if(user.status==='blocked'){toast('Your request was rejected. Contact admin.','terr');}
+  else{toast('Still pending. Check back later.','tamb');}
+}
+
+// ════════════════════════════════════════════════════
+//  LOGOUT
+// ════════════════════════════════════════════════════
+function doLogout(){CU=null;MBD=null;goPage('pg-home');}
+
+// ════════════════════════════════════════════════════
+//  ADMIN PANEL
+// ════════════════════════════════════════════════════
+function launchAdmin(){
+  document.getElementById('adm-org').textContent=CC.name;
+  document.getElementById('adm-av').textContent=CU.name.charAt(0).toUpperCase();
+  document.getElementById('adm-un').textContent=CU.name;
+  updAdmBadge();
+  goPage('pg-admin');
+  document.querySelector('.adm-wrap .adm-side').onclick=function(e){
+    const ni=e.target.closest('[data-adm]');
+    if(!ni)return;
+    document.querySelectorAll('.adm-ni').forEach(n=>n.classList.remove('act'));
+    ni.classList.add('act');
+    const sec=ni.getAttribute('data-adm');
+    const titles={dash:['Dashboard','Committee overview'],pend:['Pending requests','Awaiting approval'],users:['Members','Manage members'],log:['Access log','Audit trail'],settings:['Settings','Committee details'],key:['Committee key','View and manage key']};
+    const [h,p]=titles[sec]||[sec,''];
+    document.getElementById('adm-ph').textContent=h;
+    document.getElementById('adm-pp').textContent=p;
+    ({dash:admDash,pend:admPending,users:admUsers,log:admLog,settings:admSettings,key:admKey})[sec]?.();
+  };
+  admDash();
+}
+function updAdmBadge(){const n=(CCD?.users||[]).filter(u=>u.status==='pending').length;const el=document.getElementById('adm-pb');if(el){el.textContent=n||'';el.style.display=n?'':'none';}}
+function openMB(role){
+  if(!CU){toast('Sign in first.','tamb');return;}
+  CU.role=role;
+  MBD=getMBData(CC.id);
+  if(!MBD.users.find(u=>u.email===CU.email)){
+    MBD.users.push({name:CU.name,email:CU.email,role,division:CU.division||'',designation:CU.designation||'',lastLogin:new Date().toLocaleString('en-GB')});
+  }
+  saveD();
+  launchMB(role);
+}
+
+function admDash(){
+  CCD=getCommData(CC.id);
+  const active=(CCD.users||[]).filter(u=>u.status==='active').length;
+  const pending=(CCD.users||[]).filter(u=>u.status==='pending').length;
+  const log=(CCD.log||[]).slice(0,8);
+  document.getElementById('adm-content').innerHTML=
+    '<div class="mets">'
+    +'<div class="met"><div class="ml">Active members</div><div class="mv mv-g">'+active+'</div></div>'
+    +'<div class="met"><div class="ml">Pending</div><div class="mv mv-a">'+pending+'</div></div>'
+    +'<div class="met"><div class="ml">Total</div><div class="mv mv-b">'+CCD.users.length+'</div></div>'
+    +'</div>'
+    +(pending?'<div class="ib ib-a" style="cursor:pointer;" onclick="document.querySelector(\'[data-adm=pend]\').click()">⏳ <strong>'+pending+' request'+( pending>1?'s':'')+' need your approval.</strong> Click to review.</div>':'<div class="ib ib-g">✅ No pending requests.</div>')
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.125rem;">'
+    +'<div class="card"><div class="ch"><span class="ct">Committee key</span></div><div class="cb">'
+    +'<div class="key-reveal"><span class="kv">'+CC.key+'</span><button class="btn btn-sm" onclick="navigator.clipboard&&navigator.clipboard.writeText(\''+CC.key+'\').then(function(){toast(\'Copied!\')})">📋</button></div>'
+    +'<div style="font-size:11.5px;color:var(--txt2);">Share this key with your team so they can register and sign in.</div>'
+    +'</div></div>'
+    +'<div class="card"><div class="ch"><span class="ct">Recent log</span></div><div class="cb" style="padding:.75rem;">'
+    +log.map(l=>'<div style="display:flex;align-items:flex-start;gap:10px;padding:.5rem 0;border-bottom:1px solid var(--bdr);"><span style="font-size:15px;flex-shrink:0;">'+(l.status==='success'?'✅':l.status==='pending'?'⏳':'❌')+'</span><div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:500;">'+l.action+'</div><div style="font-size:11.5px;color:var(--txt2);">'+l.user+' — '+l.detail+'</div><div style="font-size:10px;color:var(--txt3);">'+l.time+'</div></div></div>').join('')
+    +(log.length?'':'<div class="empty" style="padding:1.5rem;">No log entries.</div>')
+    +'</div></div></div>'
+    +'<div style="margin-top:1rem;"><strong style="font-size:13px;">Open MB Book as:</strong>'
+    +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:.75rem;">'
+    +'<button class="btn btn-p" onclick="openMB(\'engineer\')">👷 Engineer</button>'
+    +'<button class="btn btn-pr" onclick="openMB(\'chief\')">🏛️ Chief Engr.</button>'
+    +'<button class="btn" style="background:#4a1a7a;color:#fff;border-color:#4a1a7a;" onclick="openMB(\'accounts\')">💼 Accounts</button>'
+    +'</div></div>';
+}
+
+function admPending(){
+  CCD=getCommData(CC.id);
+  const pend=(CCD.users||[]).filter(u=>u.status==='pending');
+  document.getElementById('adm-content').innerHTML=
+    (pend.length?'<div class="ib ib-b">These users verified the committee key and are waiting for your approval.</div>':'<div class="ib ib-g">✅ No pending requests.</div>')
+    +pend.map(u=>'<div class="req-card urg">'
+      +'<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.875rem;">'
+      +'<div><div style="font-size:14px;font-weight:700;">'+u.name+'</div>'
+      +'<div style="font-size:12px;color:var(--txt2);">'+u.email+' · '+u.role+(u.designation?' · '+u.designation:'')+'</div>'
+      +'<div style="font-size:11px;color:var(--txt3);">'+u.addedAt+(u.reqId?' · '+u.reqId:'')+'</div></div>'
+      +'<span class="pill p-pending">Pending</span></div>'
+      +'<div class="ib ib-g" style="font-size:12px;margin-bottom:.875rem;">✅ Committee key verified — belongs to your organisation.</div>'
+      +'<div style="display:flex;gap:8px;">'
+      +'<button class="btn btn-ok" onclick="approveUser(\''+u.id+'\')">✅ Approve</button>'
+      +'<button class="btn btn-ng" onclick="rejectUser(\''+u.id+'\')">❌ Reject</button>'
+      +'</div></div>'
+    ).join('');
+}
+
+function admUsers(){
+  CCD=getCommData(CC.id);
+  document.getElementById('adm-content').innerHTML=
+    '<div class="card"><div class="ch"><span class="ct">Members ('+CCD.users.length+')</span>'
+    +'<button class="btn btn-p btn-sm" onclick="document.getElementById(\'m-adduser\').classList.add(\'open\')">+ Add manually</button></div>'
+    +'<div class="tw"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Designation</th><th>Status</th><th>Last login</th><th>Actions</th></tr></thead>'
+    +'<tbody>'+CCD.users.map(u=>'<tr>'
+      +'<td><strong>'+u.name+'</strong></td>'
+      +'<td class="mono" style="font-size:11px;">'+u.email+'</td>'
+      +'<td><span class="pill p-'+(u.role==='admin'?'admin':u.role==='chief'?'active':u.role==='accounts'?'pending':'active')+'">'+u.role+'</span></td>'
+      +'<td style="font-size:11.5px;">'+(u.designation||'—')+'</td>'
+      +'<td><span class="pill p-'+u.status+'">'+u.status+'</span></td>'
+      +'<td style="font-size:11px;color:var(--txt2);">'+(u.lastLogin||'Never')+'</td>'
+      +'<td><div style="display:flex;gap:4px;">'
+      +(u.status==='pending'?'<button class="btn btn-xs btn-ok" onclick="approveUser(\''+u.id+'\')">Approve</button><button class="btn btn-xs btn-ng" onclick="rejectUser(\''+u.id+'\')">Reject</button>':'')
+      +(u.status==='active'&&u.role!=='admin'?'<button class="btn btn-xs btn-del" onclick="blockUser(\''+u.id+'\')">Block</button>':'')
+      +(u.status==='blocked'?'<button class="btn btn-xs btn-ok" onclick="unblockUser(\''+u.id+'\')">Unblock</button>':'')
+      +(CCD.users.filter(x=>x.role==='admin'&&x.status==='active').length>1||u.role!=='admin'?'<button class="btn btn-xs btn-del" onclick="removeUser(\''+u.id+'\')">Remove</button>':'')
+      +'</div></td></tr>'
+    ).join('')+'</tbody></table></div></div>';
+}
+
+function admLog(){CCD=getCommData(CC.id);const log=CCD.log||[];document.getElementById('adm-content').innerHTML='<div class="card"><div class="ch"><span class="ct">Access log ('+log.length+')</span><button class="btn btn-sm btn-del" onclick="if(confirm(\'Clear log?\')){CCD.log=[];saveCommData(CC.id,CCD);admLog();}">🗑 Clear</button></div><div class="tw"><table><thead><tr><th>Time</th><th>Action</th><th>User</th><th>Details</th><th>Status</th></tr></thead><tbody>'+(log.length?log.map(l=>'<tr><td style="font-size:11px;white-space:nowrap;">'+l.time+'</td><td class="mono" style="font-size:11px;">'+l.action+'</td><td style="font-size:12px;">'+l.user+'</td><td style="font-size:12px;color:var(--txt2);">'+l.detail+'</td><td><span class="pill p-'+(l.status==='success'?'active':l.status==='pending'?'pending':'blocked')+'">'+l.status+'</span></td></tr>').join(''):'<tr><td colspan="5" class="empty">No log entries.</td></tr>')+'</tbody></table></div></div>';}
+function admSettings(){document.getElementById('adm-content').innerHTML='<div class="card"><div class="ch"><span class="ct">Committee details</span><button class="btn btn-p btn-sm" onclick="saveSettings()">Save</button></div><div class="cb"><div class="fg2s" style="gap:10px;"><div class="fgs"><label>Name</label><input id="set-nm" value="'+CC.name+'"></div><div class="fgs"><label>Code</label><input id="set-cd" value="'+CC.code+'" oninput="this.value=this.value.toUpperCase()"></div><div class="fgs"><label>Department</label><input id="set-dp" value="'+(CC.dept||'')+'"></div><div class="fgs"><label>Location</label><input id="set-lc" value="'+(CC.loc||'')+'"></div></div></div></div>';}
+function saveSettings(){CC.name=document.getElementById('set-nm')?.value?.trim()||CC.name;CC.code=document.getElementById('set-cd')?.value?.trim().toUpperCase()||CC.code;CC.dept=document.getElementById('set-dp')?.value?.trim()||'';CC.loc=document.getElementById('set-lc')?.value?.trim()||'';const portal=getPortal();const meta=portal.committees.find(c=>c.id===CC.id);if(meta){meta.name=CC.name;meta.code=CC.code;meta.dept=CC.dept;meta.loc=CC.loc;}savePortal(portal);document.getElementById('adm-org').textContent=CC.name;toast('Settings saved.');}
+function admKey(){document.getElementById('adm-content').innerHTML='<div class="card"><div class="ch"><span class="ct">Committee key</span></div><div class="cb"><div class="ib ib-a">⚠️ Regenerating requires all users to use the new key for future logins.</div><div class="key-reveal"><span class="kv" id="kd">'+CC.key+'</span><button class="btn btn-sm" onclick="navigator.clipboard&&navigator.clipboard.writeText(CC.key).then(function(){toast(\'Copied!\')})">📋 Copy</button></div><button class="btn btn-sm btn-del" onclick="regenKey()">🔄 Regenerate</button></div></div>';}
+function regenKey(){if(!confirm('Regenerate key? All new logins will need the new key.'))return;const c='ABCDEFGHJKLMNPQRSTUVWXYZ2345679';const seg=n=>Array.from({length:n},()=>c[Math.floor(Math.random()*c.length)]).join('');CC.key=CC.code+'-'+seg(4)+'-'+seg(4);const portal=getPortal();const meta=portal.committees.find(x=>x.id===CC.id);if(meta)meta.key=CC.key;savePortal(portal);const el=document.getElementById('kd');if(el)el.textContent=CC.key;toast('🔑 New key: '+CC.key);}
+
+function approveUser(id){CCD=getCommData(CC.id);const u=CCD.users.find(x=>x.id===id);if(!u)return;u.status='active';saveCommData(CC.id,CCD);addLog('APPROVED',CU.email,'Approved: '+u.email,'success');toast('✅ '+u.name+' approved.');updAdmBadge();admPending();}
+function rejectUser(id){CCD=getCommData(CC.id);const u=CCD.users.find(x=>x.id===id);if(!u)return;if(!confirm('Reject '+u.name+'?'))return;u.status='blocked';saveCommData(CC.id,CCD);addLog('REJECTED',CU.email,'Rejected: '+u.email,'success');toast('Rejected.','tamb');updAdmBadge();admPending();}
+function blockUser(id){CCD=getCommData(CC.id);const u=CCD.users.find(x=>x.id===id);if(!u)return;if(!confirm('Block '+u.name+'?'))return;u.status='blocked';saveCommData(CC.id,CCD);addLog('BLOCKED',CU.email,'Blocked: '+u.email,'success');toast('Blocked.','tamb');admUsers();}
+function unblockUser(id){CCD=getCommData(CC.id);const u=CCD.users.find(x=>x.id===id);if(!u)return;u.status='active';saveCommData(CC.id,CCD);addLog('UNBLOCKED',CU.email,'Unblocked: '+u.email,'success');toast('Unblocked.');admUsers();}
+function removeUser(id){CCD=getCommData(CC.id);const u=CCD.users.find(x=>x.id===id);if(!u)return;if(!confirm('Remove '+u.name+'?'))return;CCD.users=CCD.users.filter(x=>x.id!==id);saveCommData(CC.id,CCD);addLog('REMOVED',CU.email,'Removed: '+u.email,'success');toast('Removed.','tamb');admUsers();}
+function addUserManual(){CCD=getCommData(CC.id);const nm=(document.getElementById('au-nm')?.value||'').trim();const em=(document.getElementById('au-em')?.value||'').trim().toLowerCase();const pw=document.getElementById('au-pw')?.value||'';if(!nm||!em||!pw){toast('Name, email and password required.','tamb');return;}if(pw.length<6){toast('Password min. 6 chars.','tamb');return;}if(CCD.users.find(u=>u.email===em)){toast('Email already exists.','terr');return;}CCD.users.push({id:uid(),name:nm,email:em,password:hashPw(pw),role:document.getElementById('au-rl')?.value||'engineer',designation:(document.getElementById('au-de')?.value||'').trim(),division:(document.getElementById('au-dv')?.value||'').trim(),status:'active',addedBy:CU.name,addedAt:new Date().toLocaleString('en-GB'),lastLogin:null});saveCommData(CC.id,CCD);addLog('ADDED',CU.email,'Added: '+em,'success');closeM('m-adduser');toast('✅ Member added.');admUsers();}
+
+// ════════════════════════════════════════════════════
+//  MB BOOK LAUNCH
+// ════════════════════════════════════════════════════
+const NAV_E=[{id:'dashboard',icon:'◈',lbl:'Dashboard',s:'overview'},{id:'projects',icon:'⬡',lbl:'Projects',s:'overview'},{id:'boq',icon:'≡',lbl:'BOQ',s:'records'},{id:'meas',icon:'⊞',lbl:'Measurements',s:'records'},{id:'advances',icon:'💳',lbl:'Advance Payments',s:'ra'},{id:'ra-submit',icon:'📤',lbl:'Submit RA Bill',s:'ra'},{id:'ra-status',icon:'📋',lbl:'My RA Bills',s:'ra'},{id:'acc-log',icon:'💼',lbl:'Accounts Submission',s:'ra'},{id:'payments',icon:'💰',lbl:'Payment Details',s:'ra'},{id:'budget',icon:'◐',lbl:'Budget',s:'finance'},{id:'abstract',icon:'◧',lbl:'Abstract',s:'finance'},{id:'site-orders',icon:'📝',lbl:'Site Orders',s:'site'},{id:'reports',icon:'◫',lbl:'Reports',s:'analysis'},{id:'downloads',icon:'⬇',lbl:'Downloads',s:'files'}];
+const NAV_C=[{id:'dashboard',icon:'◈',lbl:'Dashboard',s:'overview'},{id:'ra-pending',icon:'⏳',lbl:'Pending Approval',s:'approval',badge:true},{id:'ra-approved',icon:'✅',lbl:'Approved Bills',s:'approval'},{id:'payments',icon:'💰',lbl:'Payment Details',s:'approval'},{id:'projects',icon:'⬡',lbl:'Projects',s:'records'},{id:'boq',icon:'≡',lbl:'BOQ',s:'records'},{id:'meas',icon:'⊞',lbl:'Measurements',s:'records'},{id:'advances',icon:'💳',lbl:'Advance Payments',s:'records'},{id:'site-orders',icon:'📝',lbl:'Site Orders',s:'site'},{id:'budget',icon:'◐',lbl:'Budget',s:'finance'},{id:'reports',icon:'◫',lbl:'Reports',s:'analysis'},{id:'downloads',icon:'⬇',lbl:'Downloads',s:'files'}];
+const NAV_A=[{id:'dashboard',icon:'◈',lbl:'Dashboard',s:'overview'},{id:'ra-approved',icon:'✅',lbl:'Approved Bills',s:'bills'},{id:'acc-log',icon:'💼',lbl:'Received Bills',s:'bills'},{id:'payments',icon:'💰',lbl:'Payment Details',s:'bills'},{id:'budget',icon:'◐',lbl:'Budget',s:'finance'},{id:'downloads',icon:'⬇',lbl:'Downloads',s:'files'}];
+const PTITLE={dashboard:'Dashboard',projects:'Projects',boq:'Bill of quantities',meas:'Measurements',advances:'Advance Payments','ra-submit':'Submit RA Bill','ra-status':'My RA Bills','ra-pending':'Pending Approval','ra-approved':'Approved Bills','acc-log':'Accounts Submission',payments:'Payment Details',budget:'Budget',abstract:'Abstract','site-orders':'Site Orders',reports:'Reports',downloads:'Downloads'};
+const SLBL={overview:'Overview',records:'Records',ra:'RA Bills',approval:'RA Approval',finance:'Finance',site:'Site',analysis:'Analysis',bills:'Bills',files:'Files'};
+
+function launchMB(role){
+  // Show loading screen while fetching from Firebase cloud
+  document.getElementById('mb-comm').textContent=CC.name;
+  document.getElementById('mb-content').innerHTML='<div style="text-align:center;padding:3rem;"><div style="font-size:2.5rem;margin-bottom:1rem;">☁️</div><div style="font-size:14px;font-weight:600;color:var(--grn);">Loading your data from cloud...</div><div style="font-size:12px;color:var(--txt2);margin-top:.5rem;">Syncing with Firebase — data is safe and up to date</div></div>';
+  goPage('pg-mb');
+  // Load from Firebase cloud first
+  getMBDataFromCloud(CC.id, function(cloudData){
+    MBD = cloudData;
+    startFirebaseSync(CC.id); // start real-time sync
+    _finishLaunchMB(role);
+  });
+}
+function _finishLaunchMB(role){
+  document.getElementById('mb-un').textContent=CU.name;
+  document.getElementById('mb-ur').textContent={engineer:'Engineer',chief:'Chief Engineer',accounts:'Accounts'}[role]||role;
+  document.getElementById('mb-av').textContent=CU.name.charAt(0).toUpperCase();
+  document.getElementById('mb-av').className='mb-av av-'+{engineer:'e',chief:'c',accounts:'a'}[role];
+  CU.role=role;
+  buildNav();
+  showSec('dashboard');
+}
+
+function buildNav(){
+  const items=CU.role==='chief'?NAV_C:CU.role==='accounts'?NAV_A:NAV_E;
+  const secs={};items.forEach(i=>{if(!secs[i.s])secs[i.s]=[];secs[i.s].push(i);});
+  document.getElementById('mb-nav').innerHTML=Object.entries(secs).map(function(en){
+    const s=en[0],its=en[1];
+    return '<div class="nb-sec"><div class="nb-lbl">'+(SLBL[s]||s)+'</div>'
+      +its.map(function(i){
+        const pend=i.badge?MBD.pending.filter(function(b){return b.status==='submitted';}).length:0;
+        return '<div class="nb-item" data-sec="'+i.id+'"><span class="nb-icon">'+i.icon+'</span>'+i.lbl+(pend?'<span class="nb-badge">'+pend+'</span>':'')+'</div>';
+      }).join('')+'</div>';
+  }).join('');
+  document.getElementById('mb-nav').onclick=function(e){
+    const el=e.target.closest('[data-sec]');if(el)showSec(el.getAttribute('data-sec'));
+  };
+}
+
+function showSec(id){
+  document.querySelectorAll('.nb-item').forEach(n=>n.classList.remove('act'));
+  const el=document.querySelector('[data-sec="'+id+'"]');if(el)el.classList.add('act');
+  document.getElementById('mb-pt').textContent=PTITLE[id]||id;
+  document.getElementById('mb-content').innerHTML='';
+  ({dashboard:rDash,projects:rProj,boq:rBOQ,meas:rMeas,advances:rAdvances,'ra-submit':rRaSubmit,'ra-status':rRaStatus,'ra-pending':rRaPending,'ra-approved':rRaApproved,'acc-log':rAccLog,payments:rPayments,budget:rBudget,abstract:rAbstract,'site-orders':rSiteOrders,reports:rReports,downloads:rDownloads})[id]?.();
+}
+
+// ════════════════════════════════════════════════════
+//  NOTIFICATIONS
+// ════════════════════════════════════════════════════
+function addNotif(user,n){if(!MBD.notifs[user])MBD.notifs[user]=[];MBD.notifs[user].unshift({id:uid(),...n,time:new Date().toLocaleString('en-GB'),read:false});saveD();if(CU&&CU.name===user)updNotif();}
+function updNotif(){if(!CU||!MBD)return;const ns=MBD.notifs[CU.name]||[];const u=ns.filter(n=>!n.read).length;const dot=document.getElementById('ndot');if(dot)dot.classList.toggle('on',u>0);const nl=document.getElementById('nlist');if(!nl)return;nl.innerHTML=ns.length?ns.slice(0,12).map(n=>'<div class="nitm '+(n.read?'':'unread')+'" onclick="openNotif(\''+n.id+'\')"><div style="display:flex;gap:8px;"><span style="font-size:15px;flex-shrink:0;">'+(n.icon||'🔔')+'</span><div><div style="font-size:12px;font-weight:600;">'+n.title+'</div><div style="font-size:11.5px;color:var(--txt2);">'+n.msg+'</div><div style="font-size:10px;color:var(--txt3);">'+n.time+'</div></div></div></div>').join(''):'<div class="empty" style="padding:1.5rem;">No notifications</div>';}
+function toggleNotif(){document.getElementById('ndrop').classList.toggle('open');updNotif();}
+function markRead(){(MBD.notifs[CU?.name]||[]).forEach(n=>n.read=true);saveD();updNotif();}
+function openNotif(nid){(MBD.notifs[CU?.name]||[]).filter(n=>n.id===nid).forEach(n=>n.read=true);saveD();updNotif();document.getElementById('ndrop').classList.remove('open');if(CU?.role==='engineer')showSec('ra-status');else showSec('ra-pending');}
+
+// ════════════════════════════════════════════════════
+//  FILE HELPERS
+// ════════════════════════════════════════════════════
+function fIcon(name){const e=(name||'').split('.').pop().toLowerCase();if(['jpg','jpeg','png','gif','webp'].includes(e))return'🖼️';if(e==='pdf')return'📄';if(['xlsx','xls','csv'].includes(e))return'📊';if(['doc','docx'].includes(e))return'📝';return'📎';}
+function fSz(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB';}
+function azDrag(e,id){e.preventDefault();document.getElementById(id)?.classList.add('dov');}
+function azOff(id){document.getElementById(id)?.classList.remove('dov');}
+function azDrop(e,key){e.preventDefault();azOff(key+'-az');readFiles(Array.from(e.dataTransfer.files),key);}
+function azPick(e,key){readFiles(Array.from(e.target.files),key);e.target.value='';}
+function readFiles(files,key){if(!PF[key])PF[key]=[];files.forEach(f=>{const r=new FileReader();r.onload=ev=>{PF[key].push({name:f.name,size:f.size,type:f.type,dataUrl:ev.target.result});renderChips(key);};r.readAsDataURL(f);});}
+function renderChips(key){const el=document.getElementById(key+'-chips');if(!el)return;el.innerHTML=(PF[key]||[]).map((f,i)=>'<span class="chip" onclick="pFile(\''+i+'\',\''+key+'\')">'+'<span style="font-size:13px;flex-shrink:0;">'+fIcon(f.name)+'</span>'+'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">'+f.name+'</span>'+'<span style="color:var(--txt3);font-size:10px;">'+fSz(f.size)+'</span>'+'<span style="color:var(--txt3);font-size:10px;margin-left:2px;" onclick="event.stopPropagation();rmPF(\''+key+'\','+i+')">✕</span></span>').join('');}
+function pFile(i,key){const f=(PF[key]||[])[i];if(!f)return;const ext=(f.name||'').split('.').pop().toLowerCase();if(['jpg','jpeg','png','gif','webp'].includes(ext)){document.getElementById('imgn').textContent=f.name;const img=document.getElementById('imgs');img.src=f.dataUrl;img._dl=f.name;document.getElementById('m-img').classList.add('open');}else{const a=document.createElement('a');a.href=f.dataUrl;a.download=f.name;a.click();}}
+function pFileDirect(f){if(!f)return;const ext=(f.name||'').split('.').pop().toLowerCase();if(['jpg','jpeg','png','gif','webp'].includes(ext)){document.getElementById('imgn').textContent=f.name;const img=document.getElementById('imgs');img.src=f.dataUrl;img._dl=f.name;document.getElementById('m-img').classList.add('open');}else{const a=document.createElement('a');a.href=f.dataUrl;a.download=f.name;a.click();}}
+function rmPF(key,i){PF[key]?.splice(i,1);renderChips(key);}
+function dlImg(){const img=document.getElementById('imgs');const a=document.createElement('a');a.href=img.src;a.download=img._dl||'img';a.click();}
+function showFiles(coll,id,ro){const arr=coll==='pending'?MBD.pending:MBD[coll];const rec=arr?.find(r=>r.id===id);if(!rec)return;FVC={coll,id};document.getElementById('fvt').textContent='Files — '+(rec.files||[]).length;const addBtn=document.getElementById('fv-add-btn');if(addBtn)addBtn.style.display=ro?'none':'';renderFV(rec.files||[],ro);document.getElementById('m-fv').classList.add('open');}
+function renderFV(files,ro){
+  var b=document.getElementById('fvb');if(!b)return;
+  if(!files||!files.length){b.innerHTML='<div class="empty" style="padding:1.5rem;"><span class="ei">📎</span>No files.</div>';return;}
+  window._fvFiles=files;
+  var html='<div style="display:flex;flex-direction:column;gap:9px;margin-top:6px;">';
+  for(var i=0;i<files.length;i++){
+    var f=files[i];
+    var ext=(f.name||'').split('.').pop().toLowerCase();
+    var isImg=['jpg','jpeg','png','gif','webp'].indexOf(ext)>-1;
+    html+='<div style="display:flex;align-items:center;gap:10px;padding:.75rem;border:1px solid var(--bdr);border-radius:var(--r);background:var(--sur2);">';
+    html+='<span style="font-size:22px;">'+fIcon(f.name)+'</span>';
+    html+='<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+f.name+'</div><div style="font-size:11px;color:var(--txt2);">'+fSz(f.size)+'</div></div>';
+    html+='<div style="display:flex;gap:6px;"><button class="btn btn-at btn-sm" onclick="pFVFile('+i+')">'+(isImg?'👁 View':'⬇ Open')+'</button>'+(ro?'':'<button class="btn btn-sm btn-del" onclick="delFV('+i+')">✕</button>')+'</div>';
+    html+='</div>';
+  }
+  html+='</div>';
+  b.innerHTML=html;
+}
+function pFVFile(i){var f=(window._fvFiles||[])[i];if(f)pFileDirect(f);}
+
+function delFV(i){const arr=FVC.coll==='pending'?MBD.pending:MBD[FVC.coll];const rec=arr?.find(r=>r.id===FVC.id);if(!rec||!rec.files)return;rec.files.splice(i,1);renderFV(rec.files);saveD();}
+function fvMore(e){const arr=FVC.coll==='pending'?MBD.pending:MBD[FVC.coll];const rec=arr?.find(r=>r.id===FVC.id);if(!rec)return;if(!rec.files)rec.files=[];const files=Array.from(e.target.files);let done=0;files.forEach(f=>{const r=new FileReader();r.onload=ev=>{rec.files.push({name:f.name,size:f.size,type:f.type,dataUrl:ev.target.result});done++;if(done===files.length){renderFV(rec.files);saveD();toast(files.length+' file(s) added.');}};r.readAsDataURL(f);});e.target.value='';}
+document.getElementById('fv-add-btn').onclick=function(){document.getElementById('fv-add-inp').click();};
+function aBtn(coll,id){const arr=coll==='pending'?MBD.pending:MBD[coll];const rec=arr?.find(r=>r.id===id);const n=(rec?.files||[]).length;return n?'<span class="acount" onclick="showFiles(\''+coll+'\','+id+')">📎 '+n+'</span>':'<button class="btn btn-xs btn-at" onclick="showFiles(\''+coll+'\','+id+')">📎 Attach</button>';}
+
+// ════════════════════════════════════════════════════
+//  PRINT
+// ════════════════════════════════════════════════════
+function doPrint(html){document.getElementById('pa').innerHTML='<div class="pp">'+html+'</div>';window.print();setTimeout(()=>document.getElementById('pa').innerHTML='',2000);}
+function printBOQ(){if(!MBD.boq.length){toast('No BOQ items.','terr');return;}let tot=0;doPrint('<div class="pp-h"><h1>Bill of Quantities</h1><p>'+CC.name+' · '+CU.name+' · '+new Date().toLocaleDateString('en-GB')+'</p></div><table class="pp-t"><thead><tr><th>Item</th><th>Description</th><th>Unit</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Amount (Nu.)</th></tr></thead><tbody>'+MBD.boq.map(b=>{tot+=b.amount;return'<tr><td>'+b.item+'</td><td>'+b.desc+'</td><td>'+b.unit+'</td><td style="text-align:right;">'+b.qty+'</td><td style="text-align:right;">'+fmt(b.rate)+'</td><td style="text-align:right;">'+fmt(b.amount)+'</td></tr>';}).join('')+'</tbody><tfoot><tr><td colspan="5" style="text-align:right;">Grand Total:</td><td style="text-align:right;">Nu. '+fmt(tot)+'</td></tr></tfoot></table><p style="font-style:italic;margin-top:6px;">'+numToWords(tot)+'</p><div class="pp-sig"><div>'+CU.name+'<br>Engineer</div><div>________________<br>Sr. Engineer</div><div>________________<br>Chief Engineer</div></div>');}
+function printRa(bid){const b=MBD.raBills.find(r=>r.id===bid)||MBD.pending.find(r=>r.id===bid);if(!b)return;const deds=(b.deductions||[]).map(d=>'<div class="pp-sr"><span>'+d.label+'</span><span>- Nu. '+fmt(d.amount)+'</span></div>').join('');doPrint('<div class="pp-h"><h1>Running Account Bill</h1><p>'+gpn(b.proj)+' · Bill No: '+b.no+'</p></div><div class="pp-sum"><h3>Bill Summary</h3><div class="pp-sr"><span>Gross Amount</span><span>Nu. '+fmt(b.gross)+'</span></div><div class="pp-sr"><span>Retention @ 10%</span><span>- Nu. '+fmt(b.ret)+'</span></div><div class="pp-sr"><span>Income Tax</span><span>- Nu. '+fmt(b.it||0)+'</span></div>'+deds+'<div class="pp-sr"><span><strong>Net Payable</strong></span><span><strong>Nu. '+fmt(b.net)+'</strong></span></div></div><p style="font-style:italic;margin-bottom:12px;">'+numToWords(b.net)+'</p><div class="pp-sig"><div>'+b.submittedBy+'<br>Engineer</div><div>'+(b.checker||'________________')+'<br>Sr. Engineer</div><div>'+(b.approvedBy||'________________')+'<br>Chief Engineer</div></div>');}
+
+// ════════════════════════════════════════════════════
+//  WORKFLOW BAR
+// ════════════════════════════════════════════════════
+function wfBar(status){const steps=[{k:'draft',l:'Draft'},{k:'submitted',l:'Submitted'},{k:'reviewing',l:'Reviewing'},{k:'approved',l:'Approved'}];const ord=['draft','submitted','reviewing','approved'];const idx=ord.indexOf(status);return'<div class="wfbar">'+steps.map((s,i)=>{let cls=status==='rejected'&&i<=1?'wfd-d':status==='rejected'&&i===2?'wfd-r':i<idx||(status==='approved'&&i<=3)?'wfd-d':i===idx?'wfd-a':'';return(i>0?'<div class="wfln '+(i<=idx&&status!=='rejected'?'wfln-d':'')+'"></div>':'')+'<div class="wfs"><div class="wfd '+cls+'">'+(cls==='wfd-d'?'✓':cls==='wfd-r'?'✕':s.l.charAt(0))+'</div><div class="wfl">'+s.l+'</div></div>';}).join('')+'</div>';}
+
+// ════════════════════════════════════════════════════
+//  BOQ
+// ════════════════════════════════════════════════════
+function rBOQ(){
+  const mc=document.getElementById('mb-content');
+  const pOpts=MBD.projects.map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('');
+  PF['bi']=[];
+  mc.innerHTML='<div class="card"><div class="ch"><span class="ct">📥 Upload BOQ (Excel / CSV)</span><button class="btn btn-sm" style="background:var(--ambb);color:var(--amb);border-color:#f5dba0;" onclick="dlBoqTpl()">⬇ Template</button></div><div class="cb"><div class="ib ib-b">Columns: A=Item No · B=Description · C=Unit · D=Quantity · E=Rate · F=Amount (auto)</div><div class="ip" id="boq-az" ondragover="azDrag(event,\'boq-az\')" ondragleave="azOff(\'boq-az\')" ondrop="boqDrop(event)"><input type="file" id="boq-up" accept=".xlsx,.xls,.csv,.pdf" onchange="boqLoad(event)"><div style="font-size:1.875rem;opacity:.45;margin-bottom:.5rem;">📊</div><strong style="font-size:13px;">Drop BOQ Excel / CSV here</strong><p style="font-size:12px;color:var(--txt2);margin:.375rem 0 .75rem;">Excel auto-fills the table · PDF stored as reference</p><button class="btn btn-p btn-sm" onclick="document.getElementById(\'boq-up\').click()">Browse file</button></div><div id="boq-prev" style="display:none;margin-top:1rem;"></div></div></div>'
+    +'<div class="card"><div class="ch"><span class="ct">Bill of quantities</span><div style="display:flex;gap:8px;"><select id="boq-pf" style="font-size:12px;padding:5px 8px;border:1px solid var(--bdr2);border-radius:var(--r);" onchange="fillBOQ()"><option value="">All projects</option>'+pOpts+'</select><button class="btn btn-p btn-sm" onclick="openBoqForm()">+ Add</button><button class="btn btn-pr btn-sm" onclick="printBOQ()">🖨 Print</button></div></div><div class="tw"><table><thead><tr><th>Item</th><th>Description</th><th>Unit</th><th>Qty</th><th>Rate (Nu.)</th><th>Amount (Nu.)</th><th>In words</th><th>Project</th><th>Files</th><th></th></tr></thead><tbody id="tb-boq"></tbody><tfoot><tr><td colspan="5" style="text-align:right;">Total:</td><td id="boq-tot" class="mono">0.00</td><td id="boq-totw" style="font-size:10px;color:var(--txt2);font-style:italic;" colspan="4"></td></tr></tfoot></table></div></div>'
+    +'<div id="boq-form" style="display:none;" class="card"><div class="ch"><span class="ct">Add BOQ item</span><button class="btn btn-sm" onclick="document.getElementById(\'boq-form\').style.display=\'none\'">✕</button></div><div class="cb"><div class="fg3s" style="margin-bottom:10px;"><div class="fgs"><label>Item no.</label><input id="bi" placeholder="1.1"></div><div class="fgs"><label>Project</label><select id="bp">'+pOpts+'</select></div><div class="fgs"><label>Unit</label><select id="bu"><option>Cum</option><option>Sqm</option><option>Rmt</option><option>Nos</option><option>MT</option><option>Kg</option><option>Lump sum</option></select></div><div class="fgs ffall"><label>Description *</label><input id="bd" placeholder="Full description"></div><div class="fgs"><label>Quantity</label><input id="bq" type="number" oninput="calcBA()"></div><div class="fgs"><label>Rate (Nu.)</label><input id="br" type="number" oninput="calcBA()"></div><div class="fgs"><label>Amount — auto</label><input id="bamt" readonly style="background:var(--sur2);"></div></div><div class="ew" id="bamt-w" style="margin-bottom:.875rem;"></div><div class="fgs" style="margin-bottom:.875rem;"><label>Attach files</label><div class="az" id="bi-az" ondragover="azDrag(event,\'bi-az\')" ondragleave="azOff(\'bi-az\')" ondrop="azDrop(event,\'bi\')"><input type="file" id="bi-af" multiple onchange="azPick(event,\'bi\')"><p style="font-size:12px;">Drop or <button class="btn btn-xs btn-at" onclick="document.getElementById(\'bi-af\').click()">Browse</button></p></div><div id="bi-chips" class="chips"></div></div><button class="btn btn-p" onclick="saveBoqItem()">Add item</button></div></div>';
+  fillBOQ();
+}
+function calcBA(){const q=parseFloat(document.getElementById('bq')?.value)||0,r=parseFloat(document.getElementById('br')?.value)||0,a=q*r;const ae=document.getElementById('bamt');if(ae)ae.value=fmt(a);const aw=document.getElementById('bamt-w');if(aw)aw.textContent=a?numToWords(a):'';}
+function openBoqForm(){document.getElementById('boq-form').style.display='';}
+function saveBoqItem(){const qty=parseFloat(document.getElementById('bq')?.value)||0,rate=parseFloat(document.getElementById('br')?.value)||0;MBD.boq.push({id:uid(),item:document.getElementById('bi').value,proj:document.getElementById('bp').value||null,desc:document.getElementById('bd').value,unit:document.getElementById('bu').value,qty,rate,amount:qty*rate,files:[...(PF['bi']||[])]});document.getElementById('boq-form').style.display='none';PF['bi']=[];fillBOQ();saveD();toast('BOQ item added.');}
+function fillBOQ(){const f=document.getElementById('boq-pf')?.value;const rows=f?MBD.boq.filter(b=>b.proj===f):MBD.boq;const tb=document.getElementById('tb-boq');if(!tb)return;let tot=0;if(!rows.length){tb.innerHTML='<tr><td colspan="10"><div class="empty">No BOQ items yet. Upload Excel or add manually.</div></td></tr>';document.getElementById('boq-tot').textContent='0.00';return;}tb.innerHTML=rows.map(b=>{tot+=b.amount;return'<tr><td class="mono">'+(b.item||'—')+'</td><td>'+b.desc+'</td><td>'+b.unit+'</td><td class="mono">'+b.qty+'</td><td class="mono">'+fmt(b.rate)+'</td><td class="mono"><strong>'+fmt(b.amount)+'</strong></td><td style="font-size:10px;color:var(--txt2);font-style:italic;">'+numToWords(b.amount)+'</td><td style="font-size:11px;color:var(--txt2);">'+(b.proj?gpn(b.proj):'—')+'</td><td>'+aBtn('boq',b.id)+'</td><td><button class="btn btn-xs btn-del" onclick="delRec(\'boq\',\''+b.id+'\')">✕</button></td></tr>';}).join('');const te=document.getElementById('boq-tot'),tw=document.getElementById('boq-totw');if(te)te.textContent=fmt(tot);if(tw)tw.textContent=numToWords(tot);}
+function dlBoqTpl(){const csv='Item No.,Description of Work,Unit,Quantity,Rate (Nu.),Amount (Nu.)\n1.1,Earthwork in excavation,Cum,150,450,=D2*E2\n1.2,PCC M15 in foundation,Cum,25,8500,=D3*E3\n2.1,Brick masonry 1:6,Cum,80,12500,=D4*E4';const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='BOQ_Template.csv';a.click();}
+function boqDrop(e){e.preventDefault();azOff('boq-az');const f=e.dataTransfer.files[0];if(f)procBoq(f);}
+function boqLoad(e){const f=e.target.files[0];if(f)procBoq(f);e.target.value='';}
+function procBoq(file){const ext=file.name.split('.').pop().toLowerCase();if(ext==='pdf'){const r=new FileReader();r.onload=ev=>{if(!MBD.boq.length)MBD.boq.push({id:uid(),item:'REF',desc:'BOQ Reference (PDF)',unit:'—',qty:0,rate:0,amount:0,proj:null,files:[{name:file.name,size:file.size,type:file.type,dataUrl:ev.target.result}]});else if(MBD.boq[0].files)MBD.boq[0].files.push({name:file.name,size:file.size,type:file.type,dataUrl:ev.target.result});fillBOQ();saveD();toast('PDF stored as reference.','tamb');};r.readAsDataURL(file);return;}const reader=new FileReader();reader.onload=ev=>{try{const wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'});const ws=wb.Sheets[wb.SheetNames[0]];const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});parseBoq(rows);}catch(err){toast('Could not read file.','terr');}};reader.readAsArrayBuffer(file);}
+function parseBoq(rows){let start=1;for(let i=0;i<Math.min(6,rows.length);i++){const r=rows[i].map(c=>String(c||'').toLowerCase());if(r.some(c=>c.includes('description')||c.includes('quantity')||c.includes('rate'))){start=i+1;break;}}tmpBoq=[];for(let i=start;i<rows.length;i++){const row=rows[i];if(!row||row.every(c=>c===''||c===null||c===undefined))continue;const obj={item:String(row[0]||''),desc:String(row[1]||''),unit:String(row[2]||'Nos'),qty:parseFloat(row[3])||0,rate:parseFloat(row[4])||0};const ex=parseFloat(row[5])||0;obj.amount=ex>0?ex:obj.qty*obj.rate;obj._v=!!obj.desc;tmpBoq.push(obj);}renderBoqPrev();}
+function renderBoqPrev(){const el=document.getElementById('boq-prev');if(!el)return;el.style.display='block';const valid=tmpBoq.filter(r=>r._v);let tot=valid.reduce((s,r)=>s+r.amount,0);el.innerHTML='<div style="display:flex;gap:8px;margin-bottom:.75rem;flex-wrap:wrap;"><span style="font-size:11px;padding:3px 9px;border-radius:var(--r);font-weight:500;background:var(--blub);color:var(--blu);">Total: '+tmpBoq.length+'</span><span style="font-size:11px;padding:3px 9px;border-radius:var(--r);font-weight:500;background:var(--grnl);color:var(--grn);">✓ Valid: '+valid.length+'</span><span style="font-size:11px;padding:3px 9px;border-radius:var(--r);font-weight:500;background:var(--sur2);color:var(--txt2);">Total: Nu. '+fmt(tot)+'</span></div><div class="pws"><table class="ptbl"><thead><tr><th>Item</th><th>Description</th><th>Unit</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody>'+tmpBoq.map(r=>'<tr class="'+(r._v?'rok':'')+'"><td class="mono">'+r.item+'</td><td>'+r.desc+'</td><td>'+r.unit+'</td><td>'+r.qty+'</td><td>'+fmt(r.rate)+'</td><td>'+fmt(r.amount)+'</td></tr>').join('')+'</tbody></table></div><div style="margin-top:.875rem;display:flex;gap:8px;"><button class="btn btn-p" onclick="importBoq()">✓ Import '+valid.length+' rows</button><button class="btn btn-sm" onclick="document.getElementById(\'boq-prev\').style.display=\'none\'">Cancel</button></div>';}
+function importBoq(){const valid=tmpBoq.filter(r=>r._v);const projId=document.getElementById('boq-pf')?.value||null;valid.forEach(r=>MBD.boq.push({id:uid(),item:r.item,desc:r.desc,unit:r.unit,qty:r.qty,rate:r.rate,amount:r.amount,proj:projId,files:[]}));document.getElementById('boq-prev').style.display='none';tmpBoq=[];fillBOQ();saveD();toast('✓ '+valid.length+' BOQ items imported.');}
+function delRec(type,id){if(!confirm('Remove?'))return;MBD[type]=MBD[type].filter(i=>i.id!==id);saveD();({boq:fillBOQ,meas:fillMeas,budget:fillBudg})[type]?.();}
+
+// ════════════════════════════════════════════════════
+//  RA SUBMIT
+// ════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════
+//  ADVANCE PAYMENTS  (Feature 3 & 4)
+// ════════════════════════════════════════════════════
+function rAdvances(){
+  var mc=document.getElementById('mb-content');
+  var pOpts=MBD.projects.map(function(p){return '<option value="'+p.id+'">'+p.name+'</option>';}).join('');
+  mc.innerHTML='<div class="card"><div class="ch"><span class="ct">💳 Advance Payments — Project-wise register</span><button class="btn btn-p btn-sm" onclick="document.getElementById(\'adv-form\').style.display=\'\'">+ Record advance</button></div><div class="cb"><div class="ib ib-b">Record advances given to contractor. These will auto-appear in RA Bill deductions with running recovery balance.</div></div></div>'
+    +'<div id="adv-form" style="display:none;" class="card"><div class="ch"><span class="ct">Record advance payment</span><button class="btn btn-sm" onclick="document.getElementById(\'adv-form\').style.display=\'none\'">✕</button></div><div class="cb">'
+    +'<div class="fg4s" style="margin-bottom:10px;">'
+    +'<div class="fgs"><label>Date *</label><input id="adv-d" type="date" value="'+new Date().toISOString().split('T')[0]+'"></div>'
+    +'<div class="fgs"><label>Project *</label><select id="adv-p">'+pOpts+'</select></div>'
+    +'<div class="fgs"><label>Advance type *</label><select id="adv-t"><option value="Mobilisation Advance">Mobilisation Advance</option><option value="Labour Advance">Labour Advance</option><option value="Materials Advance">Materials Advance</option><option value="Other Advance">Other Advance</option></select></div>'
+    +'<div class="fgs"><label>Amount (Nu.) *</label><input id="adv-a" type="number" placeholder="0.00" oninput="document.getElementById(\'adv-aw\').textContent=numToWords(this.value)"></div>'
+    +'<div class="fgs"><label>WO / Ref. no.</label><input id="adv-ref" placeholder="ADV/2024/001"></div>'
+    +'<div class="fgs"><label>Voucher no.</label><input id="adv-v" placeholder="Voucher number"></div>'
+    +'<div class="fgs"><label>Recovery % limit</label><input id="adv-rl" type="number" placeholder="80" value="80" min="1" max="100"></div>'
+    +'<div class="fgs"><label>Remarks</label><input id="adv-rem" placeholder="Notes..."></div>'
+    +'</div>'
+    +'<div id="adv-aw" style="font-size:11px;color:var(--txt2);font-style:italic;padding:4px 0 8px;"></div>'
+    +'<button class="btn btn-p" onclick="saveAdvance()">Save advance</button>'
+    +'</div></div>'
+    +'<div id="adv-list-wrap"></div>';
+  renderAdvanceList();
+}
+
+function saveAdvance(){
+  var date=document.getElementById('adv-d')?.value;
+  var proj=document.getElementById('adv-p')?.value||null;
+  var type=document.getElementById('adv-t')?.value||'';
+  var amount=parseFloat(document.getElementById('adv-a')?.value)||0;
+  if(!date||!proj||!amount){toast('Date, project and amount required.','terr');return;}
+  if(!MBD.advances)MBD.advances=[];
+  MBD.advances.push({
+    id:uid(),date,proj,type,amount,
+    ref:document.getElementById('adv-ref')?.value||'',
+    voucherNo:document.getElementById('adv-v')?.value||'',
+    recoveryLimit:parseFloat(document.getElementById('adv-rl')?.value)||80,
+    remarks:document.getElementById('adv-rem')?.value||'',
+    recordedBy:CU.name,
+    recoveries:[] // will store {raNo, amount, date}
+  });
+  saveD();
+  document.getElementById('adv-form').style.display='none';
+  toast('✅ Advance recorded.');
+  renderAdvanceList();
+}
+
+function getAdvanceSummary(advId){
+  var adv=(MBD.advances||[]).find(function(a){return a.id===advId;});
+  if(!adv)return{total:0,recovered:0,balance:0};
+  // Calculate recovered from RA bills (deductions matching this advance)
+  var recovered=0;
+  var allBills=MBD.pending.concat(MBD.raBills);
+  allBills.forEach(function(b){
+    (b.deductions||[]).forEach(function(d){
+      if(d.advanceId===advId)recovered+=d.amount||0;
+    });
+  });
+  return{total:adv.amount,recovered,balance:adv.amount-recovered,pct:adv.amount?Math.min(100,Math.round(recovered/adv.amount*100)):0};
+}
+
+function renderAdvanceList(){
+  var el=document.getElementById('adv-list-wrap');if(!el)return;
+  if(!MBD.advances||!MBD.advances.length){el.innerHTML='<div class="empty" style="margin-top:2rem;"><span class="ei">💳</span>No advances recorded yet.</div>';return;}
+  // Group by project
+  var byProj={};
+  MBD.advances.forEach(function(a){
+    if(!byProj[a.proj])byProj[a.proj]=[];
+    byProj[a.proj].push(a);
+  });
+  var html='';
+  Object.keys(byProj).forEach(function(pid){
+    var advs=byProj[pid];
+    var p=gp(pid);
+    html+='<div class="card"><div class="ch"><span class="ct">📁 '+gpn(pid)+'</span><span style="font-size:12px;color:var(--txt2);">'+(p?p.contractor:'')+'</span></div><div class="tw"><table><thead><tr><th>Date</th><th>Type</th><th>Amount (Nu.)</th><th>Ref</th><th>Sanctioned</th><th>Recovered</th><th>Balance</th><th>Recovery %</th><th>Status</th><th></th></tr></thead><tbody>';
+    advs.forEach(function(a){
+      var s=getAdvanceSummary(a.id);
+      var cls=s.balance<=0?'color:var(--grn2);':s.pct>70?'color:var(--amb);':'color:var(--red);';
+      var statusPill=s.balance<=0?'<span class="pill p-active">Fully Recovered</span>':s.pct>0?'<span class="pill p-pending">Partially Recovered</span>':'<span class="pill p-rejected">Not Started</span>';
+      html+='<tr>'
+        +'<td>'+a.date+'</td>'
+        +'<td><span class="ttag">'+a.type+'</span></td>'
+        +'<td class="mono"><strong>Nu. '+fmt(a.amount)+'</strong></td>'
+        +'<td class="mono" style="font-size:11px;">'+(a.ref||'—')+'</td>'
+        +'<td class="mono">Nu. '+fmt(a.amount)+'</td>'
+        +'<td class="mono mv-g">Nu. '+fmt(s.recovered)+'</td>'
+        +'<td class="mono" style="'+cls+'font-weight:600;">Nu. '+fmt(s.balance)+'</td>'
+        +'<td><div style="display:flex;align-items:center;gap:5px;"><div class="pb" style="flex:1;min-width:60px;"><div class="pf '+(s.pct>90?'':'')+(s.pct>70?'pf-a':'')+'" style="width:'+s.pct+'%"></div></div><span style="font-size:10px;">'+s.pct+'%</span></div></td>'
+        +'<td>'+statusPill+'</td>'
+        +'<td><button class="btn btn-xs btn-del" onclick="delAdvance(\''+a.id+'\')">✕</button></td>'
+        +'</tr>';
+    });
+    html+='</tbody></table></div></div>';
+  });
+  el.innerHTML=html;
+}
+
+function delAdvance(id){
+  if(!confirm('Remove this advance record?'))return;
+  MBD.advances=MBD.advances.filter(function(a){return a.id!==id;});
+  saveD();renderAdvanceList();toast('Advance removed.','tamb');
+}
+
+// Get advances for a project with balance (for RA deductions)
+function getProjectAdvances(projId){
+  return (MBD.advances||[]).filter(function(a){return a.proj===projId;}).map(function(a){
+    var s=getAdvanceSummary(a.id);
+    return Object.assign({},a,s);
+  }).filter(function(a){return a.balance>0;});
+}
+
+
+function rRaSubmit(){
+  var mc=document.getElementById('mb-content');
+  var pOpts='<option value="">Select project...</option>'+MBD.projects.map(function(p){return '<option value="'+p.id+'">'+p.name+'</option>';}).join('');
+  PF['ra-new']=[];_deds=[];
+  mc.innerHTML='<div class="ib ib-b">Upload contractor\'s bill → Cross-check with MB measurements → Submit to Chief for approval</div>'
+    +'<div class="card"><div class="ch"><span class="ct">RA Bill details</span></div><div class="cb">'
+    +'<div class="fg4s" style="margin-bottom:10px;">'
+    +'<div class="fgs"><label>Bill no. *</label><input id="s-rno" placeholder="RA/2024/001"></div>'
+    +'<div class="fgs"><label>RA running no. *</label><select id="s-rra"><option value="">Select RA no.</option>'+(function(){var o='';for(var i=1;i<=100;i++)o+='<option value="RA-'+i+'">RA '+i+'</option>';o+='<option value="Final">Final Bill</option>';return o;})()+'</select></div>'
+    +'<div class="fgs"><label>Project *</label><select id="s-rp" onchange="raFill()">'+pOpts+'</select></div>'
+    +'<div class="fgs"><label>Contractor</label><input id="s-rc" placeholder="Auto from project"></div>'
+    +'<div class="fgs"><label>Period from</label><input id="s-rps" type="date"></div>'
+    +'<div class="fgs"><label>Period to</label><input id="s-rpe" type="date"></div>'
+    +'<div class="fgs"><label>Checked by</label><input id="s-rchk" placeholder="Sr. Engineer"></div>'
+    +'<div class="fgs"><label>Remarks for Chief</label><input id="s-rrem" placeholder="Notes..."></div>'
+    +'</div></div></div>'
+    +'<div class="card"><div class="ch"><span class="ct">Gross amount &amp; GST</span></div><div class="cb">'
+    +'<div class="fg4s" style="margin-bottom:10px;">'
+    +'<div class="fgs"><label>Gross amount (Nu.) — Contractor\'s claim *</label><input id="s-rg" type="number" placeholder="0.00" oninput="calcNet()"></div>'
+    +'<div class="fgs"><label>GST applicable?</label><select id="s-gst" onchange="calcNet()"><option value="no">No GST</option><option value="yes">Yes — 5% GST</option></select></div>'
+    +'<div class="fgs"><label>GST amount (5%) — auto</label><input id="s-gst-amt" readonly style="background:var(--sur2);"></div>'
+    +'<div class="fgs"><label>Total gross with GST — auto</label><input id="s-gross-tot" readonly style="background:var(--sur2);font-weight:600;"></div>'
+    +'</div>'
+    +'</div></div>'
+    +'<div class="card"><div class="ch"><span class="ct">Deductions</span></div><div class="cb">'
+    +'<div class="fg4s" style="margin-bottom:12px;">'
+    +'<div class="fgs"><label>Retention 10% — auto</label><input id="s-rret" type="number" readonly style="background:var(--sur2);"></div>'
+    +'<div class="fgs"><label>Income tax (Nu.)</label><input id="s-rit" type="number" value="0" oninput="calcNet()"></div>'
+    +'<div class="fgs"></div><div class="fgs"></div>'
+    +'</div>'
+    +'<div id="adv-recovery-section" style="display:none;">'
+    +'<div style="font-size:12px;font-weight:600;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.625rem;">💳 Advance recovery</div>'
+    +'<div id="adv-recovery-list"></div>'
+    +'</div>'
+    +'<div style="margin-bottom:.75rem;">'
+    +'<label style="font-size:11px;font-weight:500;color:var(--txt2);display:block;margin-bottom:6px;">Additional deductions</label>'
+    +'<div id="ded-list"></div>'
+    +'<button class="btn btn-sm" style="background:var(--ambb);color:var(--amb);border-color:#f5dba0;" onclick="addDed()">+ Add deduction</button>'
+    +'</div>'
+    +'<div class="ns-box" id="ns-box">'
+    +'<div class="ns-row"><span class="ns-lbl">Contractor\'s gross:</span><span class="mono" id="ns-g">Nu. 0.00</span></div>'
+    +'<div class="ns-row"><span class="ns-lbl">GST (5%):</span><span class="mono" id="ns-gst">+ Nu. 0.00</span></div>'
+    +'<div class="ns-row" style="border-bottom:1.5px solid var(--grn2);padding-bottom:8px;font-weight:600;"><span>Total gross incl. GST:</span><span class="mono" id="ns-gtot">Nu. 0.00</span></div>'
+    +'<div class="ns-row"><span class="ns-lbl">Less: Retention 10%:</span><span class="mono" id="ns-ret">- Nu. 0.00</span></div>'
+    +'<div class="ns-row"><span class="ns-lbl">Less: Income tax:</span><span class="mono" id="ns-it">- Nu. 0.00</span></div>'
+    +'<div id="ns-deds"></div>'
+    +'<div class="ns-row tot"><span>Net payable:</span><span class="mono" id="ns-net">Nu. 0.00</span></div>'
+    +'<div style="font-size:11px;color:var(--txt2);font-style:italic;margin-top:4px;" id="ns-w"></div>'
+    +'</div>'
+    +'</div></div>'
+    +'<div class="card"><div class="ch"><span class="ct" id="mb-comp-title">📊 MB Measurements vs Contractor Bill</span></div><div class="cb" id="mb-comp-body"><div class="empty">Select a project and RA number above to see comparison.</div></div></div>'
+    +'<div class="card"><div class="ch"><span class="ct">📎 Attach RA bill documents</span></div><div class="cb">'
+    +'<div class="ib ib-a">Upload contractor\'s RA bill PDF/Excel before submitting. Chief will review these.</div>'
+    +'<div class="az" id="ra-new-az" ondragover="azDrag(event,\'ra-new-az\')" ondragleave="azOff(\'ra-new-az\')" ondrop="azDrop(event,\'ra-new\')">'
+    +'<input type="file" id="ra-new-af" multiple onchange="azPick(event,\'ra-new\')">'
+    +'<div style="font-size:1.75rem;opacity:.45;margin-bottom:.5rem;">📎</div>'
+    +'<p style="font-size:13px;font-weight:600;margin-bottom:.375rem;">Drop RA bill documents here</p>'
+    +'<button class="btn btn-at" onclick="document.getElementById(\'ra-new-af\').click()">Browse files</button>'
+    +'</div><div id="ra-new-chips" class="chips" style="margin-top:8px;"></div>'
+    +'</div></div>'
+    +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:.5rem;">'
+    +'<button class="btn btn-p" style="font-size:13.5px;padding:9px 22px;" onclick="submitRa()">📤 Save &amp; Submit to Chief</button>'
+    +'<button class="btn" onclick="saveDraft()">💾 Save draft</button>'
+    +'</div>';
+  renderDeds();
+  // wire up RA change to show MB comparison
+  setTimeout(function(){
+    var raEl=document.getElementById('s-rra');
+    if(raEl)raEl.addEventListener('change',function(){showRAMBComparison();loadAdvanceRecovery();});
+    var pEl=document.getElementById('s-rp');
+    if(pEl)pEl.addEventListener('change',function(){showRAMBComparison();loadAdvanceRecovery();});
+  },100);
+}
+
+function loadAdvanceRecovery(){
+  var projId=document.getElementById('s-rp')?.value;
+  var raNo=document.getElementById('s-rra')?.value;
+  var sec=document.getElementById('adv-recovery-section');
+  var list=document.getElementById('adv-recovery-list');
+  if(!sec||!list)return;
+  if(!projId){sec.style.display='none';return;}
+  var advances=getProjectAdvances(projId);
+  if(!advances.length){sec.style.display='none';return;}
+  sec.style.display='';
+  list.innerHTML=advances.map(function(a,i){
+    var prevRecovered=0;
+    // Check recovery in previous RAs
+    var allBills=MBD.pending.concat(MBD.raBills);
+    allBills.forEach(function(b){
+      if(b.proj===projId&&b.id!==undefined){
+        (b.deductions||[]).forEach(function(d){
+          if(d.advanceId===a.id)prevRecovered+=d.amount||0;
+        });
+      }
+    });
+    var remaining=a.amount-prevRecovered;
+    return '<div style="border:1px solid var(--bdr);border-radius:var(--r);padding:.875rem;margin-bottom:.75rem;background:var(--sur2);">'
+      +'<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:.75rem;">'
+      +'<div><strong style="font-size:13px;">'+a.type+'</strong><br>'
+      +'<span style="font-size:11.5px;color:var(--txt2);">Original: Nu. '+fmt(a.amount)+' · Prev recovered: Nu. '+fmt(prevRecovered)+' · <strong style="color:'+(remaining>0?'var(--red)':'var(--grn2)')+'">Balance: Nu. '+fmt(remaining)+'</strong></span>'
+      +'</div><span class="pill p-'+(remaining<=0?'active':'pending')+'">'+( remaining<=0?'Fully Recovered':'Balance: Nu. '+fmt(remaining))+'</span>'
+      +'</div>'
+      +(remaining>0?'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;align-items:end;">'
+        +'<div class="fgs"><label style="font-size:11px;color:var(--txt2);">Recovery method</label>'
+        +'<select id="adv-rm-'+a.id+'" onchange="calcAdvRecovery(\''+a.id+'\','+remaining+')" style="font-size:12px;border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 9px;">'
+        +'<option value="none">No recovery this RA</option>'
+        +'<option value="pct">By percentage (%)</option>'
+        +'<option value="amt">Fixed amount (Nu.)</option>'
+        +'</select></div>'
+        +'<div class="fgs"><label style="font-size:11px;color:var(--txt2);">Recovery value</label>'
+        +'<input id="adv-rv-'+a.id+'" type="number" placeholder="e.g. 25 for 25%" style="font-size:12px;border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 9px;" oninput="calcAdvRecovery(\''+a.id+'\','+remaining+')">'
+        +'</div>'
+        +'<div class="fgs"><label style="font-size:11px;color:var(--txt2);">Recovery amount (auto)</label>'
+        +'<input id="adv-ra-'+a.id+'" readonly style="font-size:12px;border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 9px;background:var(--sur2);font-weight:600;" placeholder="0.00">'
+        +'</div></div>':'<div class="ib ib-g" style="font-size:12px;">✅ Fully recovered — no deduction needed.</div>')
+      +'</div>';
+  }).join('');
+}
+
+function calcAdvRecovery(advId,remaining){
+  var method=document.getElementById('adv-rm-'+advId)?.value;
+  var val=parseFloat(document.getElementById('adv-rv-'+advId)?.value)||0;
+  var amt=0;
+  if(method==='pct') amt=Math.min(remaining,(remaining*val/100));
+  if(method==='amt') amt=Math.min(remaining,val);
+  var raEl=document.getElementById('adv-ra-'+advId);
+  if(raEl) raEl.value=fmt(amt);
+  calcNet();
+}
+
+function showRAMBComparison(){
+  var projId=document.getElementById('s-rp')?.value;
+  var raNo=document.getElementById('s-rra')?.value;
+  var body=document.getElementById('mb-comp-body');
+  if(!body)return;
+  if(!projId||!raNo){body.innerHTML='<div class="empty">Select project and RA number to see MB vs contractor comparison.</div>';return;}
+  var mbEntries=MBD.meas.filter(function(m){return m.proj===projId&&m.raNo===raNo;});
+  var boqItems=MBD.boq.filter(function(b){return b.proj===projId;});
+  if(!mbEntries.length){body.innerHTML='<div class="empty"><span class="ei">📐</span>No MB measurements for this RA yet. Go to Measurements to add entries for '+raNo+'.</div>';return;}
+  var totalMB=0,totalCont=0;
+  var rows=mbEntries.map(function(m){
+    var boq=m.boqId?MBD.boq.find(function(b){return b.id===m.boqId;}):null;
+    var contQty=boq?boq.qty:0;
+    var mbQty=m.qty||0;
+    var rate=m.rate||0;
+    var mbAmt=mbQty*rate;
+    var contAmt=contQty*rate;
+    totalMB+=mbAmt;totalCont+=contAmt;
+    var devQty=mbQty-contQty;
+    var devAmt=mbAmt-contAmt;
+    var cls=Math.abs(devQty)<0.001?'color:var(--txt3);':devQty>0?'color:var(--grn2);font-weight:600;':'color:var(--red);font-weight:600;';
+    return '<tr><td class="mono" style="font-size:11px;">'+(boq?boq.item:'—')+'</td>'
+      +'<td style="font-size:12px;">'+m.desc+'</td>'
+      +'<td>'+m.unit+'</td>'
+      +'<td class="mono">'+fmt(contQty)+'</td>'
+      +'<td class="mono" style="font-weight:600;">'+fmt(mbQty)+'</td>'
+      +'<td class="mono" style="'+cls+'">'+(devQty>0?'+':'')+fmt(devQty)+'</td>'
+      +'<td class="mono">'+fmt(rate)+'</td>'
+      +'<td class="mono">Nu. '+fmt(contAmt)+'</td>'
+      +'<td class="mono" style="font-weight:600;">Nu. '+fmt(mbAmt)+'</td>'
+      +'<td class="mono" style="'+cls+'">'+(devAmt>0?'+':'')+'Nu. '+fmt(devAmt)+'</td>'
+      +'</tr>';
+  }).join('');
+  var totalDev=totalMB-totalCont;
+  body.innerHTML='<div class="ib '+(Math.abs(totalDev)<0.01?'ib-g':totalDev<0?'ib-r':'ib-b')+'" style="margin-bottom:.875rem;">'
+    +(Math.abs(totalDev)<0.01?'✅ MB measurements match contractor bill exactly.'
+      :totalDev<0?'⚠️ MB amount is Nu. '+fmt(Math.abs(totalDev))+' LESS than contractor claim. Correct the gross before submitting.'
+      :'ℹ️ MB amount is Nu. '+fmt(totalDev)+' MORE than contractor claim.')
+    +'</div>'
+    +'<div class="tw"><table><thead><tr>'
+    +'<th>Item</th><th>Description</th><th>Unit</th>'
+    +'<th>Contractor Qty</th><th>MB Qty</th><th>Dev. Qty</th>'
+    +'<th>Rate</th><th>Contractor Amt</th><th>MB Amt</th><th>Dev. Amt</th>'
+    +'</tr></thead><tbody>'+rows+'</tbody>'
+    +'<tfoot><tr><td colspan="7" style="text-align:right;font-weight:600;">Totals:</td>'
+    +'<td class="mono">Nu. '+fmt(totalCont)+'</td>'
+    +'<td class="mono" style="font-weight:600;">Nu. '+fmt(totalMB)+'</td>'
+    +'<td class="mono" style="font-weight:600;color:'+(totalDev<0?'var(--red)':totalDev>0?'var(--grn2)':'var(--txt3)')+';">'+(totalDev>0?'+':'')+'Nu. '+fmt(totalDev)+'</td>'
+    +'</tr></tfoot></table></div>';
+}
+
+function addDed(){_deds.push({label:'',amount:0});renderDeds();}
+function renderDeds(){const el=document.getElementById('ded-list');if(!el)return;el.innerHTML=_deds.map((d,i)=>'<div class="dr"><input placeholder="Deduction label (e.g. Advance recovery)" value="'+d.label+'" oninput="_deds['+i+'].label=this.value;calcNet()"><input type="number" placeholder="Amount (Nu.)" value="'+(d.amount||'')+'" oninput="_deds['+i+'].amount=parseFloat(this.value)||0;calcNet()"><button class="btn btn-xs btn-del" onclick="_deds.splice('+i+',1);renderDeds();calcNet()">✕</button></div>').join('');calcNet();}
+function calcNet(){
+  var g=parseFloat(document.getElementById('s-rg')?.value)||0;
+  var gstYes=(document.getElementById('s-gst')?.value==='yes');
+  var gstAmt=gstYes?g*0.05:0;
+  var grossTot=g+gstAmt;
+  var ret=grossTot*0.10;
+  var it=parseFloat(document.getElementById('s-rit')?.value)||0;
+  var gstEl=document.getElementById('s-gst-amt');if(gstEl)gstEl.value=fmt(gstAmt);
+  var gtEl=document.getElementById('s-gross-tot');if(gtEl)gtEl.value=fmt(grossTot);
+  var retEl=document.getElementById('s-rret');if(retEl)retEl.value=ret.toFixed(2);
+  var dedTot=_deds.reduce(function(s,d){return s+(d.amount||0);},0);
+  // Advance recoveries
+  var advTot=0;
+  var advHtml='';
+  if(MBD.advances){
+    MBD.advances.forEach(function(a){
+      var rmEl=document.getElementById('adv-rm-'+a.id);
+      var raEl2=document.getElementById('adv-ra-'+a.id);
+      if(rmEl&&raEl2&&rmEl.value!=='none'){
+        var amt=parseFloat(raEl2.value.replace(/,/g,''))||0;
+        if(amt>0){
+          advTot+=amt;
+          advHtml+='<div class="ns-row"><span class="ns-lbl">Less: '+a.type+' recovery:</span><span class="mono">- Nu. '+fmt(amt)+'</span></div>';
+        }
+      }
+    });
+  }
+  var net=grossTot-ret-it-dedTot-advTot;
+  function set(id,v){var e=document.getElementById(id);if(e)e.textContent=v;}
+  set('ns-g','Nu. '+fmt(g));
+  set('ns-gst',gstYes?'+ Nu. '+fmt(gstAmt):'Nu. 0.00 (N/A)');
+  set('ns-gtot','Nu. '+fmt(grossTot));
+  set('ns-ret','- Nu. '+fmt(ret));
+  set('ns-it','- Nu. '+fmt(it));
+  set('ns-net','Nu. '+fmt(net));
+  set('ns-w',numToWords(net));
+  var dd=document.getElementById('ns-deds');
+  if(dd)dd.innerHTML=_deds.map(function(d){return '<div class="ns-row"><span class="ns-lbl">Less '+d.label+':</span><span class="mono">- Nu. '+fmt(d.amount||0)+'</span></div>';}).join('')+advHtml;
+}
+function raFill(){
+  var projId=document.getElementById('s-rp')?.value;
+  var p=gp(projId);
+  if(p){
+    var el=document.getElementById('s-rc');
+    if(el)el.value=p.contractor||'';
+  }
+  // Load advance recovery section
+  loadAdvanceRecovery();
+  // Show MB comparison if RA already selected
+  showRAMBComparison();
+}
+function submitRa(isDraft){
+  isDraft=isDraft||false;
+  var no=(document.getElementById('s-rno')?.value||'').trim();
+  var g=parseFloat(document.getElementById('s-rg')?.value)||0;
+  if(!no){toast('Bill number required.','terr');return;}
+  if(!g){toast('Gross amount required.','terr');return;}
+  var files=PF['ra-new']||[];
+  if(!isDraft&&!files.length){toast('Attach at least one document.','tamb');return;}
+  var gstYes=(document.getElementById('s-gst')?.value==='yes');
+  var gstAmt=gstYes?g*0.05:0;
+  var grossTot=g+gstAmt;
+  var ret=grossTot*0.10;
+  var it=parseFloat(document.getElementById('s-rit')?.value)||0;
+  var dedTot=_deds.reduce(function(s,d){return s+(d.amount||0);},0);
+  // Collect advance recoveries
+  var advDeds=[];
+  var advTot=0;
+  if(MBD.advances){
+    MBD.advances.forEach(function(a){
+      var rmEl=document.getElementById('adv-rm-'+a.id);
+      var raEl2=document.getElementById('adv-ra-'+a.id);
+      if(rmEl&&raEl2&&rmEl.value!=='none'){
+        var amt=parseFloat(raEl2.value.replace(/,/g,''))||0;
+        if(amt>0){
+          advDeds.push({label:a.type+' recovery',amount:amt,advanceId:a.id});
+          advTot+=amt;
+        }
+      }
+    });
+  }
+  var allDeds=[..._deds,...advDeds];
+  var net=grossTot-ret-it-dedTot-advTot;
+  var bill={id:uid(),no,rno:document.getElementById('s-rra')?.value||'',proj:document.getElementById('s-rp')?.value||null,contractor:document.getElementById('s-rc')?.value||'',start:document.getElementById('s-rps')?.value||'',end:document.getElementById('s-rpe')?.value||'',gross:g,gst:gstAmt,grossTot,ret,it,deductions:allDeds,net,status:isDraft?'draft':'submitted',checker:document.getElementById('s-rchk')?.value||'',remarks:document.getElementById('s-rrem')?.value||'',submittedBy:CU.name,submittedByEmail:CU.email,submittedAt:new Date().toLocaleString('en-GB'),files:[...files],approvedBy:null,approvedAt:null,rejectedReason:null};
+  MBD.pending.push(bill);_deds=[];PF['ra-new']=[];saveD();
+  if(!isDraft){
+    if(!MBD.notifs['__chiefs__'])MBD.notifs['__chiefs__']=[];
+    MBD.notifs['__chiefs__'].unshift({id:uid(),icon:'📋',title:'New RA Bill for Review',msg:'Bill '+no+' submitted by '+CU.name+' — Net Nu. '+fmt(bill.net),time:new Date().toLocaleString('en-GB'),read:false});
+    sendToRole('chief','RA Bill '+no+' Submitted for Approval','Dear Chief Engineer,\n\n'+CU.name+' ('+CU.email+') submitted RA Bill '+no+'.\n\nGross: Nu. '+fmt(g)+'\nNet: Nu. '+fmt(bill.net)+'\n('+numToWords(bill.net)+')\n\nPlease log in to review and approve.\n\nRegards,\n'+CC.name+' MB Book');
+    toast('✅ Bill submitted. Chief has been notified.');showPop('📤','Bill Submitted','RA Bill '+no+' sent to Chief Engineer for approval. You will receive an email once approved.');
+  }else{toast('Draft saved.');}
+  showSec('ra-status');
+}
+function saveDraft(){submitRa(true);}
+
+// ════════════════════════════════════════════════════
+//  RA STATUS (Engineer)
+// ════════════════════════════════════════════════════
+function rRaStatus(){
+  const mc=document.getElementById('mb-content');
+  const mine=[...MBD.pending.filter(b=>b.submittedBy===CU.name),...MBD.raBills.filter(b=>b.submittedBy===CU.name)].sort((a,b)=>b.id>a.id?1:-1);
+  if(!mine.length){mc.innerHTML='<div class="empty" style="margin-top:3rem;"><span class="ei">📋</span>No RA bills submitted yet.<br><button class="btn btn-p" style="margin-top:1rem;" onclick="showSec(\'ra-submit\')">Submit first RA Bill →</button></div>';return;}
+  mc.innerHTML=mine.map(function(b){
+    const isApproved=!!MBD.raBills.find(r=>r.id===b.id);const sta=isApproved?'approved':b.status;
+    const bc={draft:'var(--bdr)',submitted:'var(--amb)',approved:'var(--grn2)',rejected:'var(--red)'}[sta]||'var(--bdr)';
+    return '<div class="card" style="border-left:4px solid '+bc+'"><div class="cb">'+wfBar(sta)
+      +'<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.875rem;"><div><div style="font-size:14px;font-weight:700;">'+b.no+' <span style="font-size:12px;font-weight:400;color:var(--txt2);">'+(b.rno||'')+'</span></div><div style="font-size:11.5px;color:var(--txt2);">'+gpn(b.proj)+' · '+b.submittedAt+'</div></div><span class="pill p-'+sta+'">'+sta.charAt(0).toUpperCase()+sta.slice(1)+'</span></div>'
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:.875rem;">'
+      +'<div class="met"><div class="ml">Gross</div><div class="mv mv-s mono">Nu. '+fmt(b.gross)+'</div></div>'
+      +'<div class="met"><div class="ml">Retention 10%</div><div class="mv mv-s mono">Nu. '+fmt(b.ret)+'</div></div>'
+      +'<div class="met" style="border-color:'+(isApproved?'#b2ddc3':'var(--bdr)')+'"><div class="ml">Net payable</div><div class="mv mv-s mono" style="color:'+(isApproved?'var(--grn2)':'inherit')+'">Nu. '+fmt(b.net)+'</div></div>'
+      +'</div><div style="font-size:10.5px;color:var(--txt2);font-style:italic;margin-bottom:.75rem;">'+numToWords(b.net)+'</div>'
+      +(isApproved?'<div class="ib ib-g">✅ Approved by '+b.approvedBy+' on '+b.approvedAt+'. You can print and submit to Accounts.</div>':'')
+      +(b.rejectedReason?'<div class="ib ib-r">❌ Rejected: '+b.rejectedReason+'</div>':'')
+      +'<div style="display:flex;gap:7px;flex-wrap:wrap;">'+aBtn('pending',b.id)+(isApproved?'<button class="btn btn-pr btn-sm" onclick="printRa(\''+b.id+'\')">🖨 Print</button><button class="btn btn-at btn-sm" onclick="showSec(\'acc-log\')">📨 Submit to Accounts</button>':'')+'</div>'
+      +'</div></div>';
+  }).join('');
+}
+
+// ════════════════════════════════════════════════════
+//  RA PENDING (Chief)
+// ════════════════════════════════════════════════════
+function rRaPending(){
+  const mc=document.getElementById('mb-content');
+  if(MBD.notifs['__chiefs__'])MBD.notifs['__chiefs__'].forEach(n=>n.read=true);
+  const queue=MBD.pending.filter(b=>b.status==='submitted');
+  if(!queue.length){mc.innerHTML='<div class="empty" style="margin-top:3rem;"><span class="ei">✅</span>No bills pending approval.</div>';return;}
+  mc.innerHTML='<div class="ib ib-b">Review attached documents carefully before approving.</div>'
+    +queue.map(function(b){
+      return '<div class="card" style="border-left:4px solid var(--amb);"><div class="cb">'
+        +'<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.875rem;"><div><div style="font-size:14px;font-weight:700;">'+b.no+' — '+(b.rno||'RA Bill')+'</div><div style="font-size:11.5px;color:var(--txt2);">By <strong>'+b.submittedBy+'</strong> ('+b.submittedByEmail+') · '+b.submittedAt+' · '+gpn(b.proj)+'</div>'+(b.remarks?'<div style="font-size:11px;color:var(--txt2);font-style:italic;">"'+b.remarks+'"</div>':'')+'</div><span class="pill p-pending">Pending</span></div>'
+        +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:.875rem;">'
+        +'<div class="met"><div class="ml">Gross</div><div class="mv mv-s mono">Nu. '+fmt(b.gross)+'</div></div>'
+        +'<div class="met"><div class="ml">Retention 10%</div><div class="mv mv-s mono">Nu. '+fmt(b.ret)+'</div></div>'
+        +(b.deductions||[]).map(d=>'<div class="met"><div class="ml">'+d.label+'</div><div class="mv mv-s mono">Nu. '+fmt(d.amount)+'</div></div>').join('')
+        +'<div class="met" style="border-color:#b2ddc3;background:var(--grnl);"><div class="ml">Net payable</div><div class="mv mv-s mv-g mono">Nu. '+fmt(b.net)+'</div></div>'
+        +'</div><div style="font-size:10.5px;color:var(--txt2);font-style:italic;margin-bottom:.875rem;">'+numToWords(b.net)+'</div>'
+        +'<div style="margin-bottom:.875rem;"><div style="font-size:11px;font-weight:600;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">📎 Documents ('+((b.files||[]).length)+')</div>'
+        +(b.files&&b.files.length?'<div style="display:flex;flex-wrap:wrap;gap:6px;">'+b.files.map(function(f){return'<span class="chip" onclick="pFileDirect('+JSON.stringify(f).replace(/"/g,"'")+')" style="cursor:pointer;"><span style="font-size:16px;">'+fIcon(f.name)+'</span><span>'+f.name+'</span><span style="color:var(--txt3);font-size:10px;">'+fSz(f.size)+'</span></span>';}).join('')+'</div>':'<span style="font-size:12px;color:var(--txt3);font-style:italic;">No documents attached.</span>')
+        +'</div>'
+        +'<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+        +'<button class="btn btn-ok" onclick="approveRa(\''+b.id+'\')">✅ Approve</button>'
+        +'<button class="btn btn-ng" onclick="openRej(\''+b.id+'\')">❌ Reject</button>'
+        +'</div></div></div>';
+    }).join('');
+}
+function approveRa(id){const b=MBD.pending.find(r=>r.id===id);if(!b)return;if(!(b.files||[]).length&&!confirm('No documents attached. Approve anyway?'))return;b.status='approved';b.approvedBy=CU.name;b.approvedAt=new Date().toLocaleString('en-GB');MBD.pending=MBD.pending.filter(r=>r.id!==id);MBD.raBills.push({...b});addNotif(b.submittedBy,{icon:'✅',title:'RA Bill Approved!',msg:'Bill '+b.no+' (Nu. '+fmt(b.net)+') approved by '+CU.name+'. You can print and submit to Accounts.'});sendEmail(b.submittedBy,b.submittedByEmail,'RA Bill '+b.no+' APPROVED ✅','Dear '+b.submittedBy+',\n\nYour RA Bill '+b.no+' has been APPROVED by '+CU.name+' on '+b.approvedAt+'.\n\nNet Payable: Nu. '+fmt(b.net)+'\n('+numToWords(b.net)+')\n\nYou may now print the bill and submit to Accounts.\n\nRegards,\n'+CU.name+'\nChief Engineer, '+CC.name);saveD();showPop('✅','Bill Approved','Bill '+b.no+' approved. Engineer '+b.submittedBy+' has been notified by email.');rRaPending();}
+function openRej(id){rejId=id;document.getElementById('rej-t').value='';document.getElementById('m-rej').classList.add('open');}
+function confirmReject(){const reason=(document.getElementById('rej-t').value||'').trim();if(!reason){toast('Reason required.','terr');return;}const b=MBD.pending.find(r=>r.id===rejId);if(!b){closeM('m-rej');return;}b.status='rejected';b.rejectedReason=reason;addNotif(b.submittedBy,{icon:'❌',title:'RA Bill Rejected',msg:'Bill '+b.no+' rejected by '+CU.name+'. Reason: '+reason});sendEmail(b.submittedBy,b.submittedByEmail,'RA Bill '+b.no+' REJECTED ❌','Dear '+b.submittedBy+',\n\nYour RA Bill '+b.no+' has been REJECTED by '+CU.name+'.\n\nReason:\n'+reason+'\n\nPlease correct and resubmit.\n\nRegards,\n'+CU.name+'\nChief Engineer, '+CC.name);saveD();closeM('m-rej');showPop('❌','Bill Rejected','Bill '+b.no+' rejected. Engineer notified.');rRaPending();}
+
+// ════════════════════════════════════════════════════
+//  RA APPROVED
+// ════════════════════════════════════════════════════
+function rRaApproved(){const mc=document.getElementById('mb-content');if(!MBD.raBills.length){mc.innerHTML='<div class="empty" style="margin-top:3rem;"><span class="ei">✅</span>No approved bills yet.</div>';return;}let tot=0;mc.innerHTML='<div class="card"><div class="ch"><span class="ct">Approved RA Bills</span></div><div class="tw"><table><thead><tr><th>Bill no.</th><th>Project</th><th>Submitted by</th><th>Gross</th><th>Net payable</th><th>In words</th><th>Approved by</th><th>Date</th><th>Docs</th><th>Print</th></tr></thead><tbody>'+MBD.raBills.map(r=>{tot+=r.net;return'<tr><td class="mono"><strong>'+r.no+'</strong></td><td style="font-size:11px;">'+gpn(r.proj)+'</td><td style="font-size:11px;">'+r.submittedBy+'</td><td class="mono">Nu. '+fmt(r.gross)+'</td><td class="mono" style="color:var(--grn2);font-weight:600;">Nu. '+fmt(r.net)+'</td><td style="font-size:10px;color:var(--txt2);font-style:italic;">'+numToWords(r.net)+'</td><td style="font-size:11px;">'+r.approvedBy+'</td><td style="font-size:11px;">'+r.approvedAt+'</td><td>'+aBtn('raBills',r.id)+'</td><td><button class="btn btn-pr btn-xs" onclick="printRa(\''+r.id+'\')">🖨</button></td></tr>';}).join('')+'</tbody><tfoot><tr><td colspan="4" style="text-align:right;">Total net:</td><td class="mono">Nu. '+fmt(tot)+'</td><td style="font-size:10px;color:var(--txt2);font-style:italic;">'+numToWords(tot)+'</td><td colspan="4"></td></tr></tfoot></table></div></div>';}
+
+// ════════════════════════════════════════════════════
+//  ACCOUNTS LOG
+// ════════════════════════════════════════════════════
+function rAccLog(){
+  const mc=document.getElementById('mb-content');
+  const approved=MBD.raBills.filter(b=>CU.role==='accounts'||b.submittedBy===CU.name);
+  const submitted=new Set(MBD.accountsLog.map(a=>a.billId));
+  const pending=approved.filter(b=>!submitted.has(b.id));
+  mc.innerHTML='<div class="ib ib-b">📨 After Chief approval, upload stamped bill copy and submit to Accounts/Finance.</div>'
+    +(pending.length&&CU.role==='engineer'?'<div class="card"><div class="ch"><span class="ct">Ready for Accounts submission</span></div><div class="cb">'+pending.map(b=>'<div style="display:flex;align-items:center;justify-content:space-between;padding:.75rem;border:1px solid var(--bdr);border-radius:var(--r);margin-bottom:8px;background:var(--sur2);flex-wrap:wrap;gap:8px;"><div><strong>'+b.no+'</strong> — '+gpn(b.proj)+'<br><span style="font-size:11.5px;color:var(--grn2);">Net: Nu. '+fmt(b.net)+'</span></div><button class="btn btn-p btn-sm" onclick="openAccSubmit(\''+b.id+'\')">📨 Submit to Accounts</button></div>').join('')+'</div></div>':'')
+    +'<div class="card"><div class="ch"><span class="ct">Submission records</span></div><div class="tw"><table><thead><tr><th>Bill no.</th><th>Project</th><th>Net (Nu.)</th><th>Submitted by</th><th>Date</th><th>Accounts email</th></tr></thead><tbody>'
+    +(MBD.accountsLog.length?MBD.accountsLog.map(a=>'<tr><td class="mono">'+a.billNo+'</td><td style="font-size:11px;">'+gpn(a.proj)+'</td><td class="mono">Nu. '+fmt(a.net)+'</td><td style="font-size:11px;">'+a.submittedBy+'</td><td style="font-size:11px;">'+a.submittedAt+'</td><td style="font-size:11px;">'+a.emailTo+'</td></tr>').join(''):'<tr><td colspan="6"><div class="empty" style="padding:1.5rem;">No submissions yet.</div></td></tr>')
+    +'</tbody></table></div></div>'
+    +'<div id="acc-form" style="display:none;" class="card"><div class="ch"><span class="ct" id="acc-ftitle">Submit to Accounts</span><button class="btn btn-sm" onclick="document.getElementById(\'acc-form\').style.display=\'none\'">✕</button></div><div class="cb"><div class="fg2s" style="margin-bottom:.875rem;"><div class="fgs"><label>Accounts officer name</label><input id="acc-off" placeholder="Officer name"></div><div class="fgs"><label>Accounts email *</label><input id="acc-em" type="email" placeholder="accounts@finance.gov.bt"></div><div class="fgs ffall"><label>Notes</label><input id="acc-notes" placeholder="Any notes to Finance..."></div></div><button class="btn btn-p" onclick="confirmAccSubmit()">📨 Submit &amp; Send Email</button></div></div>';
+}
+let _accBillId=null;
+function openAccSubmit(id){_accBillId=id;const b=MBD.raBills.find(r=>r.id===id);if(!b)return;document.getElementById('acc-ftitle').textContent='Submit Bill '+b.no+' to Accounts';document.getElementById('acc-form').style.display='';document.getElementById('acc-form').scrollIntoView({behavior:'smooth'});}
+function confirmAccSubmit(){const b=MBD.raBills.find(r=>r.id===_accBillId);if(!b)return;const email=(document.getElementById('acc-em')?.value||'').trim();if(!email){toast('Accounts email required.','terr');return;}const log={id:uid(),billId:b.id,billNo:b.no,proj:b.proj,net:b.net,submittedBy:CU.name,submittedAt:new Date().toLocaleString('en-GB'),emailTo:email,officer:document.getElementById('acc-off')?.value||''};MBD.accountsLog.push(log);sendEmail(document.getElementById('acc-off')?.value||'Accounts Officer',email,'RA Bill '+b.no+' Submitted for Payment','Dear '+(document.getElementById('acc-off')?.value||'Accounts Officer')+',\n\nRA Bill '+b.no+' for project '+gpn(b.proj)+' has been submitted for payment.\n\nNet Payable: Nu. '+fmt(b.net)+'\n('+numToWords(b.net)+')\n\nApproved by: '+b.approvedBy+' on '+b.approvedAt+'\nSubmitted by: '+CU.name+' on '+log.submittedAt+'\n\nKindly process for payment.\n\nRegards,\n'+CU.name+'\n'+CC.name);saveD();toast('✅ Submitted to Accounts. Email sent.');document.getElementById('acc-form').style.display='none';rAccLog();}
+
+// ════════════════════════════════════════════════════
+//  PAYMENT DETAILS
+// ════════════════════════════════════════════════════
+function rPayments(){
+  const mc=document.getElementById('mb-content');
+  const pOpts=MBD.projects.map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('');
+  function pSum(pid){const bills=MBD.raBills.filter(r=>r.proj===pid);const pays=MBD.payments.filter(p=>p.proj===pid);const cv=(MBD.projects.find(p=>p.id===pid)||{}).value||0;const tG=bills.reduce((s,b)=>s+b.gross,0);const tN=bills.reduce((s,b)=>s+b.net,0);const tR=bills.reduce((s,b)=>s+b.ret,0);const tP=pays.filter(p=>p.type!=='BG Release'&&p.type!=='Retention Release').reduce((s,p)=>s+(p.amount||0),0);const tRR=pays.filter(p=>p.type==='Retention Release').reduce((s,p)=>s+(p.amount||0),0);const tBG=pays.filter(p=>p.type==='BG Release').reduce((s,p)=>s+(p.amount||0),0);return{cv,tG,tN,tR,tP,tRR,tBG,retBal:tR-tRR,bal:tN-tP};}
+  let html='<div class="card"><div class="ch"><span class="ct">💰 Payment details — Contractor ledger</span><button class="btn btn-p btn-sm" onclick="document.getElementById(\'pay-form\').style.display=\'\';document.getElementById(\'pay-form\').scrollIntoView({behavior:\'smooth\'})">+ Record payment</button></div></div>';
+  html+=MBD.projects.length?MBD.projects.map(function(p){
+    const s=pSum(p.id);const pays=MBD.payments.filter(py=>py.proj===p.id);const pct=s.tN?Math.min(100,Math.round(s.tP/s.tN*100)):0;
+    let rows=pays.map(function(py){return'<tr><td>'+py.date+'</td><td class="mono" style="font-size:11px;">'+(py.billRef||'—')+'</td><td><span class="pill p-'+(py.type==='RA Payment'?'approved':py.type==='Retention Release'?'pending':'reviewing')+'">'+py.type+'</span></td><td style="font-size:11.5px;">'+(py.mode||'—')+'</td><td class="mono" style="font-size:11px;">'+(py.voucherNo||'—')+'</td><td class="mono"><strong>Nu. '+fmt(py.amount)+'</strong></td><td style="font-size:10px;color:var(--txt2);font-style:italic;">'+numToWords(py.amount)+'</td><td style="font-size:11.5px;color:var(--txt2);">'+(py.remarks||'—')+'</td><td><button class="btn btn-xs btn-del" onclick="MBD.payments=MBD.payments.filter(x=>x.id!==\''+py.id+'\');saveD();rPayments();">✕</button></td></tr>';}).join('');
+    return '<div class="card"><div class="ch"><div><span class="ct">'+p.name+'</span><div style="font-size:11.5px;color:var(--txt2);margin-top:3px;">'+(p.contractor||'—')+' · WO: '+(p.wo||'—')+'</div></div><span class="pill p-'+(p.status.toLowerCase())+'">'+p.status+'</span></div><div class="cb">'
+      +'<div class="mets">'
+      +'<div class="met"><div class="ml">Contract value</div><div class="mv mv-s mono">Nu. '+fmt(s.cv)+'</div><span class="ew">'+numToWords(s.cv)+'</span></div>'
+      +'<div class="met"><div class="ml">Net payable</div><div class="mv mv-s mv-g mono">Nu. '+fmt(s.tN)+'</div></div>'
+      +'<div class="met"><div class="ml">Total paid</div><div class="mv mv-s mv-b mono">Nu. '+fmt(s.tP)+'</div></div>'
+      +'<div class="met" style="border-color:'+(s.bal>0?'#f5dba0':'#b2ddc3')+'"><div class="ml">Outstanding balance</div><div class="mv mv-s mono" style="color:'+(s.bal>0?'var(--amb)':'var(--grn2)')+'">Nu. '+fmt(s.bal)+'</div><span class="ew">'+numToWords(s.bal)+'</span></div>'
+      +'<div class="met" style="border-color:#f5c6c6"><div class="ml">Retention held</div><div class="mv mv-s mono" style="color:var(--red)">Nu. '+fmt(s.tR)+'</div></div>'
+      +'<div class="met" style="border-color:#b2ddc3"><div class="ml">Retention released</div><div class="mv mv-s mv-g mono">Nu. '+fmt(s.tRR)+'</div></div>'
+      +'<div class="met" style="border-color:#f5dba0"><div class="ml">Retention balance</div><div class="mv mv-s mono" style="color:'+(s.retBal>0?'var(--amb)':'var(--grn2)')+'">Nu. '+fmt(s.retBal)+'</div></div>'
+      +'<div class="met"><div class="ml">BG released</div><div class="mv mv-s mv-b mono">Nu. '+fmt(s.tBG)+'</div></div>'
+      +'</div>'
+      +'<div style="margin-bottom:1rem;"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px;"><span style="color:var(--txt2);">Payment completion</span><span>'+pct+'%</span></div><div class="pb" style="height:8px;"><div class="pf" style="width:'+pct+'%"></div></div></div>'
+      +(pays.length?'<div class="tw"><table><thead><tr><th>Date</th><th>RA Bill ref</th><th>Type</th><th>Mode</th><th>Voucher no.</th><th>Amount</th><th>In words</th><th>Remarks</th><th></th></tr></thead><tbody>'+rows+'</tbody><tfoot><tr><td colspan="5" style="text-align:right;">Total paid:</td><td class="mono">Nu. '+fmt(s.tP)+'</td><td style="font-size:10px;font-style:italic;">'+numToWords(s.tP)+'</td><td colspan="2"></td></tr></tfoot></table></div>':'<div class="empty" style="padding:1.5rem;"><span class="ei">💰</span>No payments recorded yet.</div>')
+      +'<div style="margin-top:.875rem;"><button class="btn btn-p btn-sm" onclick="document.getElementById(\'py-p\').value=\''+p.id+'\';document.getElementById(\'pay-form\').style.display=\'\';document.getElementById(\'pay-form\').scrollIntoView({behavior:\'smooth\'})">+ Add payment for this project</button></div>'
+      +'</div></div>';
+  }).join(''):'<div class="empty" style="margin-top:3rem;"><span class="ei">💰</span>No projects yet. Add projects first.</div>';
+  html+='<div id="pay-form" style="display:none;" class="card"><div class="ch"><span class="ct">Record payment</span><button class="btn btn-sm" onclick="document.getElementById(\'pay-form\').style.display=\'none\'">✕</button></div><div class="cb">'
+    +'<div class="fg4s" style="margin-bottom:10px;">'
+    +'<div class="fgs"><label>Date *</label><input id="py-d" type="date" value="'+new Date().toISOString().split('T')[0]+'"></div>'
+    +'<div class="fgs"><label>Project *</label><select id="py-p">'+pOpts+'</select></div>'
+    +'<div class="fgs"><label>RA Bill reference</label><select id="py-b"><option value="">— Select RA bill —</option>'+MBD.raBills.map(b=>'<option value="'+b.no+'">'+b.no+' — Nu. '+fmt(b.net)+'</option>').join('')+'</select></div>'
+    +'<div class="fgs"><label>Payment type *</label><select id="py-t"><option value="RA Payment">RA Payment</option><option value="Advance">Advance Payment</option><option value="Retention Release">Retention Release</option><option value="BG Release">BG Release</option><option value="Final Payment">Final Payment</option><option value="Mobilisation Advance">Mobilisation Advance</option><option value="Other">Other</option></select></div>'
+    +'<div class="fgs"><label>Payment mode *</label><select id="py-m"><option value="ECS/NEFT">ECS / NEFT</option><option value="Cheque">Cheque</option><option value="RTGS">RTGS</option><option value="DD">Demand Draft</option><option value="Cash">Cash</option></select></div>'
+    +'<div class="fgs"><label>Voucher / Cheque no.</label><input id="py-v" placeholder="CHQ/2024/001"></div>'
+    +'<div class="fgs"><label>Bank / Branch</label><input id="py-bk" placeholder="BNB Thimphu"></div>'
+    +'<div class="fgs"><label>Amount (Nu.) *</label><input id="py-a" type="number" placeholder="0.00" oninput="document.getElementById(\'py-aw\').textContent=numToWords(this.value)"></div>'
+    +'<div class="fgs ffall"><label>Amount in words</label><div id="py-aw" style="font-size:12px;color:var(--txt2);padding:7px 9px;background:var(--sur2);border-radius:var(--r);min-height:34px;font-style:italic;"></div></div>'
+    +'<div class="fgs ffall"><label>Remarks</label><input id="py-r" placeholder="e.g. Payment against 1st RA Bill..."></div>'
+    +'</div><button class="btn btn-p" onclick="savePayment()">Save payment record</button></div></div>';
+  mc.innerHTML=html;
+}
+function savePayment(){const date=document.getElementById('py-d')?.value;const proj=document.getElementById('py-p')?.value||null;const amount=parseFloat(document.getElementById('py-a')?.value)||0;if(!date){toast('Date required.','terr');return;}if(!amount){toast('Amount required.','terr');return;}MBD.payments.push({id:uid(),date,proj,billRef:document.getElementById('py-b')?.value||'',type:document.getElementById('py-t')?.value||'RA Payment',mode:document.getElementById('py-m')?.value||'',voucherNo:document.getElementById('py-v')?.value||'',bank:document.getElementById('py-bk')?.value||'',amount,remarks:document.getElementById('py-r')?.value||'',recordedBy:CU.name});saveD();document.getElementById('pay-form').style.display='none';toast('✅ Payment record saved.');rPayments();}
+
+// ════════════════════════════════════════════════════
+//  PROJECTS
+// ════════════════════════════════════════════════════
+function rProj(){const mc=document.getElementById('mb-content');const pOpts=MBD.projects.map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('');mc.innerHTML='<div class="card"><div class="ch"><span class="ct">Projects register</span><button class="btn btn-p btn-sm" onclick="document.getElementById(\'proj-form\').style.display=\'\'">+ Add project</button></div><div class="tw"><table><thead><tr><th>Name</th><th>Type</th><th>Location</th><th>Contractor</th><th>Contract value</th><th>In words</th><th>WO No.</th><th>Status</th><th></th></tr></thead><tbody id="tb-proj"></tbody></table></div></div><div id="proj-form" style="display:none;" class="card"><div class="ch"><span class="ct">Add project</span><button class="btn btn-sm" onclick="document.getElementById(\'proj-form\').style.display=\'none\'">✕</button></div><div class="cb"><div class="fg4s" style="margin-bottom:10px;"><div class="fgs ffall"><label>Project name *</label><input id="pn" placeholder="Construction of..."></div><div class="fgs"><label>Type</label><select id="pt"><option>Road / Highway</option><option>Building Construction</option><option>Irrigation / Canal</option><option>Bridge</option><option>Drainage</option><option>Electrical</option><option>Other</option></select></div><div class="fgs"><label>Location</label><input id="pl" placeholder="Tsirang"></div><div class="fgs"><label>Contractor</label><input id="pc" placeholder="Contractor name"></div><div class="fgs"><label>Contract value (Nu.)</label><input id="pv" type="number" oninput="document.getElementById(\'pv-w\').textContent=numToWords(this.value)"></div><div class="fgs"><label>Work order no.</label><input id="pw" placeholder="WO/2024/001"></div><div class="fgs"><label>Start date</label><input id="pst" type="date"></div><div class="fgs"><label>Completion date</label><input id="pend" type="date"></div><div class="fgs"><label>Status</label><select id="pss"><option>Ongoing</option><option>Completed</option><option>Suspended</option></select></div></div><span class="ew" id="pv-w" style="margin-bottom:.875rem;display:block;"></span><button class="btn btn-p" onclick="saveProj()">Save project</button></div></div>';fillProj();}
+function fillProj(){const tb=document.getElementById('tb-proj');if(!tb)return;tb.innerHTML=MBD.projects.length?MBD.projects.map(p=>'<tr><td><strong>'+p.name+'</strong></td><td><span class="ttag">'+p.type+'</span></td><td>'+p.location+'</td><td>'+p.contractor+'</td><td class="mono">Nu. '+fmt(p.value)+'</td><td style="font-size:10px;color:var(--txt2);font-style:italic;">'+numToWords(p.value)+'</td><td class="mono">'+p.wo+'</td><td><span class="pill p-'+p.status.toLowerCase()+'">'+p.status+'</span></td><td><button class="btn btn-xs btn-del" onclick="MBD.projects=MBD.projects.filter(x=>x.id!==\''+p.id+'\');saveD();fillProj();">✕</button></td></tr>').join(''):'<tr><td colspan="9"><div class="empty">No projects yet.</div></td></tr>';}
+function saveProj(){const name=(document.getElementById('pn')?.value||'').trim();if(!name){alert('Name required.');return;}MBD.projects.push({id:uid(),name,type:document.getElementById('pt').value,location:document.getElementById('pl').value,contractor:document.getElementById('pc').value,value:parseFloat(document.getElementById('pv').value)||0,wo:document.getElementById('pw').value,start:document.getElementById('pst').value,end:document.getElementById('pend').value,status:document.getElementById('pss').value});document.getElementById('proj-form').style.display='none';fillProj();saveD();toast('Project added.');}
+
+// ════════════════════════════════════════════════════
+//  MEASUREMENTS
+// ════════════════════════════════════════════════════
+function rMeas(){
+  var mc=document.getElementById('mb-content');
+  var pOpts=MBD.projects.map(function(p){return '<option value="'+p.id+'">'+p.name+'</option>';}).join('');
+  PF['meas-n']=[];
+  mc.innerHTML='<div class="card"><div class="ch"><span class="ct">📐 Measurement entries (MB Book)</span></div><div class="cb">'
+    +'<div class="ib ib-b">Select project and RA number to link measurements. Your entries will auto-populate the RA Bill and a deviation comparison will be shown.</div>'
+    +'<div class="fg2s" style="margin-bottom:1rem;gap:10px;">'
+    +'<div class="fgs"><label>Filter by project</label><select id="mf-proj" onchange="filterMeasView()"><option value="">All projects</option>'+pOpts+'</select></div>'
+    +'<div class="fgs"><label>Filter by RA number</label><select id="mf-ra" onchange="filterMeasView()"><option value="">All RAs</option></select></div>'
+    +'</div>'
+    +'<button class="btn btn-p btn-sm" onclick="document.getElementById(\'meas-form\').style.display=\'\'">+ Record measurement</button>'
+    +'</div></div>'
+    +'<div id="meas-deviation" style="display:none;" class="card"><div class="ch"><span class="ct">📊 Measurement vs Contractor RA — Deviation</span></div><div class="cb" id="meas-dev-body"></div></div>'
+    +'<div class="card"><div class="ch"><span class="ct">All measurement entries</span></div><div class="tw"><table><thead><tr><th>Date</th><th>Project</th><th>RA No.</th><th>MB No.</th><th>Description</th><th>Unit</th><th>Nos</th><th>L</th><th>B</th><th>H/D</th><th>MB Qty</th><th>Rate</th><th>MB Amount</th><th>Files</th><th></th></tr></thead><tbody id="tb-meas"></tbody></table></div></div>'
+    +'<div id="meas-form" style="display:none;" class="card"><div class="ch"><span class="ct">Record measurement</span><button class="btn btn-sm" onclick="document.getElementById(\'meas-form\').style.display=\'none\'">✕</button></div><div class="cb">'
+    +'<div class="fg4s" style="margin-bottom:10px;">'
+    +'<div class="fgs"><label>Date</label><input id="md" type="date" value="'+new Date().toISOString().split('T')[0]+'"></div>'
+    +'<div class="fgs"><label>Project *</label><select id="mp" onchange="loadRAForMeas()"><option value="">Select project...</option>'+pOpts+'</select></div>'
+    +'<div class="fgs"><label>RA Number *</label><select id="mra"><option value="">Select RA...</option></select></div>'
+    +'<div class="fgs"><label>BOQ Item (link to BOQ)</label><select id="mboq"><option value="">— Select BOQ item —</option></select></div>'
+    +'<div class="fgs"><label>MB book no.</label><input id="mmb" placeholder="MB/2024/01"></div>'
+    +'<div class="fgs"><label>Page no.</label><input id="mpg" type="number" value="1"></div>'
+    +'<div class="fgs ffall"><label>Description *</label><input id="mdc" placeholder="Full description of item measured"></div>'
+    +'<div class="fgs"><label>Unit</label><select id="mu"><option>Cum</option><option>Sqm</option><option>Rmt</option><option>Nos</option><option>MT</option><option>Kg</option><option>Lump sum</option></select></div>'
+    +'<div class="fgs"><label>Nos.</label><input id="mn" type="number" value="1" oninput="calcMeasQty()"></div>'
+    +'<div class="fgs"><label>L (m)</label><input id="ml" type="number" step="0.001" oninput="calcMeasQty()"></div>'
+    +'<div class="fgs"><label>B (m)</label><input id="mb2" type="number" step="0.001" oninput="calcMeasQty()"></div>'
+    +'<div class="fgs"><label>H/D (m)</label><input id="mh2" type="number" step="0.001" oninput="calcMeasQty()"></div>'
+    +'<div class="fgs"><label>MB Qty (auto)</label><input id="mqty" readonly style="background:var(--sur2);font-weight:600;"></div>'
+    +'<div class="fgs"><label>Rate (Nu.) — from BOQ</label><input id="mrate" type="number" step="0.01" oninput="calcMeasAmt()"></div>'
+    +'<div class="fgs"><label>MB Amount (auto)</label><input id="mamt" readonly style="background:var(--sur2);font-weight:600;"></div>'
+    +'<div class="fgs"><label>Recorded by</label><input id="mrec" value=""></div>'
+    +'<div class="fgs"><label>Checked by</label><input id="mchk"></div>'
+    +'</div>'
+    +'<div class="fgs" style="margin-bottom:.875rem;"><label>Attach field photos / measurement sheets</label>'
+    +'<div class="az" id="meas-az" ondragover="azDrag(event,\'meas-az\')" ondragleave="azOff(\'meas-az\')" ondrop="azDrop(event,\'meas-n\')">'
+    +'<input type="file" id="meas-af" multiple onchange="azPick(event,\'meas-n\')">'
+    +'<p style="font-size:12px;">Drop or <button class="btn btn-xs btn-at" onclick="document.getElementById(\'meas-af\').click()">Browse</button></p>'
+    +'</div><div id="meas-n-chips" class="chips"></div></div>'
+    +'<button class="btn btn-p" onclick="saveMeas()">Save measurement entry</button>'
+    +'</div></div>';
+  fillMeas();
+  document.getElementById('mrec').value=CU.name;
+}
+
+function loadRAForMeas(){
+  var projId=document.getElementById('mp')?.value;
+  var raEl=document.getElementById('mra');
+  var boqEl=document.getElementById('mboq');
+  if(!raEl||!boqEl)return;
+  raEl.innerHTML='<option value="">Select RA...</option>';
+  for(var i=1;i<=100;i++)raEl.innerHTML+='<option value="RA-'+i+'">RA '+i+'</option>';
+  raEl.innerHTML+='<option value="Final">Final Bill</option>';
+  boqEl.innerHTML='<option value="">— Link to BOQ item —</option>';
+  if(projId){
+    MBD.boq.filter(function(b){return b.proj===projId;}).forEach(function(b){
+      boqEl.innerHTML+='<option value="'+b.id+'">'+b.item+' — '+b.desc+' ('+fmt(b.rate)+')</option>';
+    });
+  }
+}
+
+function calcMeasQty(){
+  var nos=parseFloat(document.getElementById('mn')?.value)||1;
+  var l=parseFloat(document.getElementById('ml')?.value)||0;
+  var b=parseFloat(document.getElementById('mb2')?.value)||1;
+  var h=parseFloat(document.getElementById('mh2')?.value)||1;
+  var qty=l>0?nos*l*b*h:nos;
+  var qEl=document.getElementById('mqty');if(qEl)qEl.value=qty.toFixed(3);
+  calcMeasAmt();
+}
+
+function calcMeasAmt(){
+  var qty=parseFloat(document.getElementById('mqty')?.value)||0;
+  var rate=parseFloat(document.getElementById('mrate')?.value)||0;
+  var aEl=document.getElementById('mamt');
+  if(aEl)aEl.value=fmt(qty*rate);
+  // Also auto-fill rate from BOQ if linked
+  var boqId=document.getElementById('mboq')?.value;
+  if(boqId){
+    var boq=MBD.boq.find(function(b){return b.id===boqId;});
+    if(boq&&!document.getElementById('mrate')?.value){
+      var rEl=document.getElementById('mrate');if(rEl){rEl.value=boq.rate;calcMeasAmt();}
+    }
+  }
+}
+
+function filterMeasView(){
+  var proj=document.getElementById('mf-proj')?.value;
+  var ra=document.getElementById('mf-ra')?.value;
+  // Populate RA dropdown based on project
+  var raEl=document.getElementById('mf-ra');
+  if(raEl&&proj){
+    var ras=new Set(MBD.meas.filter(function(m){return m.proj===proj;}).map(function(m){return m.raNo;}));
+    raEl.innerHTML='<option value="">All RAs</option>';
+    ras.forEach(function(r){if(r)raEl.innerHTML+='<option value="'+r+'">'+r+'</option>';});
+  }
+  fillMeas(proj,ra);
+  showMeasDeviation(proj,ra);
+}
+
+function showMeasDeviation(projId,raNo){
+  var el=document.getElementById('meas-deviation');
+  var body=document.getElementById('meas-dev-body');
+  if(!el||!body)return;
+  if(!projId||!raNo){el.style.display='none';return;}
+  // Get MB entries for this project+RA
+  var mbEntries=MBD.meas.filter(function(m){return m.proj===projId&&m.raNo===raNo;});
+  if(!mbEntries.length){el.style.display='none';return;}
+  // Get contractor RA bill items (from pending or raBills matching project+RA no)
+  var raBill=MBD.pending.concat(MBD.raBills).find(function(b){
+    return b.proj===projId&&(b.rno===raNo||b.no===raNo);
+  });
+  var boqItems=MBD.boq.filter(function(b){return b.proj===projId;});
+  el.style.display='';
+  var rows='';
+  // Group MB entries by BOQ item
+  mbEntries.forEach(function(m){
+    var boq=m.boqId?MBD.boq.find(function(b){return b.id===m.boqId;}):null;
+    var contQty=boq?boq.qty:0;
+    var mbQty=m.qty||0;
+    var rate=m.rate||0;
+    var mbAmt=mbQty*rate;
+    var contAmt=contQty*rate;
+    var devQty=mbQty-contQty;
+    var devAmt=mbAmt-contAmt;
+    var devPct=contQty?((devQty/contQty)*100).toFixed(1):0;
+    var devCls=Math.abs(devQty)>0.001?(devQty>0?'color:var(--grn2);':'color:var(--red);'):'color:var(--txt3);';
+    rows+='<tr>'
+      +'<td style="font-size:12px;">'+(boq?boq.item:'—')+'</td>'
+      +'<td>'+m.desc+'</td>'
+      +'<td>'+m.unit+'</td>'
+      +'<td class="mono">'+fmt(contQty)+'</td>'
+      +'<td class="mono" style="font-weight:600;">'+fmt(mbQty)+'</td>'
+      +'<td class="mono" style="'+devCls+'font-weight:600;">'+(devQty>0?'+':'')+fmt(devQty)+'<br><span style="font-size:10px;">('+devPct+'%)</span></td>'
+      +'<td class="mono">'+fmt(rate)+'</td>'
+      +'<td class="mono">Nu. '+fmt(contAmt)+'</td>'
+      +'<td class="mono">Nu. '+fmt(mbAmt)+'</td>'
+      +'<td class="mono" style="'+devCls+'font-weight:600;">'+(devAmt>0?'+':'')+'Nu. '+fmt(devAmt)+'</td>'
+      +'</tr>';
+  });
+  if(!rows){el.style.display='none';return;}
+  body.innerHTML='<div class="ib ib-a" style="margin-bottom:.875rem;">Items marked in <span style="color:var(--red);font-weight:600;">red</span> = MB Qty less than contractor claim. <span style="color:var(--grn2);font-weight:600;">Green</span> = MB Qty exceeds. Use this to correct the RA before submitting to Chief.</div>'
+    +'<div class="tw"><table><thead><tr>'
+    +'<th>Item</th><th>Description</th><th>Unit</th>'
+    +'<th>Contractor Qty</th><th>MB Qty</th><th>Deviation</th>'
+    +'<th>Rate</th><th>Contractor Amount</th><th>MB Amount</th><th>Deviation Amount</th>'
+    +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+function fillMeas(filterProj,filterRA){
+  var tb=document.getElementById('tb-meas');if(!tb)return;
+  var rows=MBD.meas;
+  if(filterProj)rows=rows.filter(function(m){return m.proj===filterProj;});
+  if(filterRA)rows=rows.filter(function(m){return m.raNo===filterRA;});
+  if(!rows.length){tb.innerHTML='<tr><td colspan="15"><div class="empty">No measurement entries yet.</div></td></tr>';return;}
+  tb.innerHTML=rows.map(function(m){
+    var devHtml='';
+    if(m.boqId&&m.rate){
+      var boq=MBD.boq.find(function(b){return b.id===m.boqId;});
+      if(boq){
+        var dev=m.qty-boq.qty;
+        var cls=Math.abs(dev)<0.001?'color:var(--txt3);':dev>0?'color:var(--grn2);font-weight:600;':'color:var(--red);font-weight:600;';
+        devHtml='<br><span style="'+cls+'font-size:10px;">'+(dev>0?'+':'')+dev.toFixed(3)+' vs BOQ</span>';
+      }
+    }
+    return '<tr>'
+      +'<td>'+m.date+'</td>'
+      +'<td style="font-size:11px;">'+(m.proj?gpn(m.proj):'—')+'</td>'
+      +'<td class="mono" style="font-size:11px;">'+(m.raNo||'—')+'</td>'
+      +'<td class="mono">'+(m.mb||'—')+'</td>'
+      +'<td>'+m.desc+devHtml+'</td>'
+      +'<td>'+m.unit+'</td>'
+      +'<td>'+m.nos+'</td>'
+      +'<td>'+(m.l||'—')+'</td>'
+      +'<td>'+(m.b||'—')+'</td>'
+      +'<td>'+(m.h||'—')+'</td>'
+      +'<td class="mono"><strong>'+Number(m.qty).toFixed(3)+'</strong></td>'
+      +'<td class="mono">'+(m.rate?fmt(m.rate):'—')+'</td>'
+      +'<td class="mono">'+(m.rate?fmt(m.qty*m.rate):'—')+'</td>'
+      +'<td>'+aBtn('meas',m.id)+'</td>'
+      +'<td><button class="btn btn-xs btn-del" onclick="delRec(\'meas\',\''+m.id+'\')">✕</button></td>'
+      +'</tr>';
+  }).join('');
+}
+
+function saveMeas(){
+  var nos=parseFloat(document.getElementById('mn')?.value)||1;
+  var l=parseFloat(document.getElementById('ml')?.value)||0;
+  var b2=parseFloat(document.getElementById('mb2')?.value)||1;
+  var h=parseFloat(document.getElementById('mh2')?.value)||1;
+  var qty=l>0?nos*l*b2*h:nos;
+  var rate=parseFloat(document.getElementById('mrate')?.value)||0;
+  var projId=document.getElementById('mp')?.value||null;
+  var raNo=document.getElementById('mra')?.value||'';
+  var boqId=document.getElementById('mboq')?.value||null;
+  if(!projId){toast('Select a project.','tamb');return;}
+  if(!raNo){toast('Select RA number.','tamb');return;}
+  if(!document.getElementById('mdc')?.value.trim()){toast('Description required.','terr');return;}
+  MBD.meas.push({id:uid(),date:document.getElementById('md').value,proj:projId,raNo,boqId,mb:document.getElementById('mmb').value,page:document.getElementById('mpg').value,desc:document.getElementById('mdc').value.trim(),unit:document.getElementById('mu').value,nos,l,b:b2,h,qty,rate,recorder:document.getElementById('mrec').value,checker:document.getElementById('mchk').value,files:[...(PF['meas-n']||[])]});
+  document.getElementById('meas-form').style.display='none';
+  PF['meas-n']=[];
+  fillMeas();
+  saveD();
+  toast('Measurement saved.');
+}
+
+// ════════════════════════════════════════════════════
+//  BUDGET
+// ════════════════════════════════════════════════════
+function rBudget(){const mc=document.getElementById('mb-content');const pOpts=MBD.projects.map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('');mc.innerHTML='<div class="card"><div class="ch"><span class="ct">Budget tracking</span><button class="btn btn-p btn-sm" onclick="document.getElementById(\'budg-form\').style.display=\'\'">+ Add budget head</button></div><div class="tw"><table><thead><tr><th>Budget head</th><th>Project</th><th>FY</th><th>Sanctioned</th><th>Released</th><th>Expended</th><th>Balance</th><th>% Used</th><th></th></tr></thead><tbody id="tb-bud"></tbody><tfoot><tr><td colspan="3">Total</td><td id="bs" class="mono">0.00</td><td id="br2" class="mono">0.00</td><td id="be" class="mono">0.00</td><td id="bb" class="mono">0.00</td><td></td><td></td></tr></tfoot></table></div></div><div id="budg-form" style="display:none;" class="card"><div class="ch"><span class="ct">Add budget head</span><button class="btn btn-sm" onclick="document.getElementById(\'budg-form\').style.display=\'none\'">✕</button></div><div class="cb"><div class="fg4s" style="margin-bottom:10px;"><div class="fgs ffall"><label>Budget head *</label><input id="bhn" placeholder="Civil works, Electrical..."></div><div class="fgs"><label>Project</label><select id="bhp">'+pOpts+'</select></div><div class="fgs"><label>Financial year</label><input id="bhfy" placeholder="2024-25"></div><div class="fgs"><label>Sanctioned (Nu.)</label><input id="bhs" type="number" oninput="document.getElementById(\'bhs-w\').textContent=numToWords(this.value)"></div><div class="fgs"><label>Released (Nu.)</label><input id="bhr3" type="number"></div><div class="fgs"><label>Expended (Nu.)</label><input id="bhe" type="number"></div></div><span class="ew" id="bhs-w" style="margin-bottom:.875rem;display:block;"></span><button class="btn btn-p" onclick="saveBudget()">Save</button></div></div>';fillBudg();}
+function fillBudg(){const tb=document.getElementById('tb-bud');if(!tb)return;let tS=0,tR=0,tE=0,tB=0;tb.innerHTML=MBD.budget.length?MBD.budget.map(b=>{tS+=b.sanctioned;tR+=b.released;tE+=b.expended;tB+=b.balance;const pct=b.sanctioned?Math.min(100,Math.round(b.expended/b.sanctioned*100)):0;const cls=pct>90?'pf-r':pct>70?'pf-a':'';return'<tr><td><strong>'+b.head+'</strong></td><td style="font-size:11px;">'+(b.proj?gpn(b.proj):'—')+'</td><td>'+b.fy+'</td><td class="mono">Nu. '+fmt(b.sanctioned)+'</td><td class="mono">Nu. '+fmt(b.released)+'</td><td class="mono">Nu. '+fmt(b.expended)+'</td><td class="mono" style="'+(b.balance<0?'color:var(--red);font-weight:600;':'')+'">Nu. '+fmt(Math.abs(b.balance))+'</td><td><div style="display:flex;align-items:center;gap:5px;"><div class="pb" style="flex:1;min-width:55px;"><div class="pf '+cls+'" style="width:'+pct+'%"></div></div><span style="font-size:10px;">'+pct+'%</span></div></td><td><button class="btn btn-xs btn-del" onclick="delRec(\'budget\',\''+b.id+'\')">✕</button></td></tr>';}).join(''):'<tr><td colspan="9"><div class="empty">No budget heads.</div></td></tr>';['bs','br2','be','bb'].forEach((id,i)=>{const e=document.getElementById(id);if(e)e.textContent=fmt([tS,tR,tE,tB][i]);});}
+function saveBudget(){const s=parseFloat(document.getElementById('bhs')?.value)||0,r=parseFloat(document.getElementById('bhr3')?.value)||0,e=parseFloat(document.getElementById('bhe')?.value)||0;MBD.budget.push({id:uid(),head:document.getElementById('bhn').value,proj:document.getElementById('bhp').value||null,fy:document.getElementById('bhfy').value,sanctioned:s,released:r,expended:e,balance:s-e});document.getElementById('budg-form').style.display='none';fillBudg();saveD();toast('Budget head saved.');}
+
+// ════════════════════════════════════════════════════
+//  SITE ORDERS
+// ════════════════════════════════════════════════════
+function rSiteOrders(){const mc=document.getElementById('mb-content');const pOpts=MBD.projects.map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('');mc.innerHTML='<div class="card"><div class="ch"><span class="ct">Site Orders register</span><button class="btn btn-p btn-sm" onclick="document.getElementById(\'so-form\').style.display=\'\'">+ Add site order</button></div><div id="so-list" style="padding:.875rem;">'+renderSOList()+'</div></div><div id="so-form" style="display:none;" class="card"><div class="ch"><span class="ct">New site order</span><button class="btn btn-sm" onclick="document.getElementById(\'so-form\').style.display=\'none\'">✕</button></div><div class="cb"><div class="fg4s" style="margin-bottom:10px;"><div class="fgs"><label>Date *</label><input id="so-d" type="date" value="'+new Date().toISOString().split('T')[0]+'"></div><div class="fgs"><label>Order no.</label><input id="so-n" placeholder="SO/2024/001"></div><div class="fgs"><label>Project</label><select id="so-p">'+pOpts+'</select></div><div class="fgs"><label>Type</label><select id="so-t"><option>Design Change</option><option>Extra Item</option><option>Omission</option><option>Quantity Variation</option><option>Specification Change</option><option>Site Instruction</option><option>Other</option></select></div><div class="fgs ffall"><label>Subject / Title *</label><input id="so-ti" placeholder="Brief title"></div><div class="fgs ffall"><label>Description *</label><textarea id="so-ds" rows="3" style="font-size:12.5px;border:1px solid var(--bdr2);border-radius:var(--r);padding:8px 10px;width:100%;resize:vertical;"></textarea></div><div class="fgs"><label>Issued by</label><input id="so-by" value="'+CU.name+'"></div><div class="fgs"><label>Status</label><select id="so-s"><option>Issued</option><option>Acknowledged</option><option>Implemented</option><option>Pending</option></select></div><div class="fgs"><label>Cost impact (Nu.)</label><input id="so-c" type="number" placeholder="0.00"></div></div><button class="btn btn-p" onclick="saveSO()">Save site order</button></div></div>';}
+function renderSOList(){
+  if(!MBD.siteOrders.length)return'<div class="empty"><span class="ei">📝</span>No site orders yet.</div>';
+  return MBD.siteOrders.map(function(so){
+    var stc=so.status==='Implemented'?'approved':so.status==='Issued'?'pending':'reviewing';
+    var ci='';
+    if(so.costImpact){
+      var clr=so.costImpact>0?'var(--red)':'var(--grn2)';
+      ci='<div style="font-size:11.5px;margin-top:5px;">Cost impact: <strong style="color:'+clr+'">'+fmt(so.costImpact)+'</strong></div>';
+    }
+    return '<div style="border:1px solid var(--bdr);border-radius:var(--rl);padding:1rem;margin-bottom:.875rem;background:var(--sur);">'
+      +'<div style="display:flex;justify-content:space-between;margin-bottom:.5rem;">'
+      +'<div><strong>'+so.title+'</strong><br><span style="font-size:11.5px;color:var(--txt2);">'+so.date+' · '+gpn(so.proj)+' · <span class="ttag">'+so.type+'</span></span></div>'
+      +'<div style="display:flex;gap:6px;align-items:center;"><span class="pill p-'+stc+'">'+so.status+'</span>'
+      +'<button class="btn btn-xs btn-del" onclick="delSO(MBD.siteOrders[MBD.siteOrders.findIndex(function(x){return x.id===MBD.siteOrders.filter(function(y){return y.id===\''+so.id+'\'})[0].id;})].id)">✕</button></div></div>';
+      +'<div style="font-size:12.5px;color:var(--txt2);">'+so.desc+'</div>'+ci+'</div>';
+  }).join('');
+}
+
+function delSOById(id){MBD.siteOrders=MBD.siteOrders.filter(function(x){return x.id!==id;});saveD();var el=document.getElementById('so-list');if(el)el.innerHTML=renderSOList();}
+function delSO(id){MBD.siteOrders=MBD.siteOrders.filter(function(x){return x.id!==id;});saveD();var el=document.getElementById('so-list');if(el)el.innerHTML=renderSOList();}
+function saveSO(){const title=(document.getElementById('so-ti')?.value||'').trim();if(!title){toast('Title required.','terr');return;}MBD.siteOrders.push({id:uid(),date:document.getElementById('so-d').value,no:document.getElementById('so-n').value,proj:document.getElementById('so-p').value||null,type:document.getElementById('so-t').value,title,desc:document.getElementById('so-ds').value,issuedBy:document.getElementById('so-by').value,status:document.getElementById('so-s').value,costImpact:parseFloat(document.getElementById('so-c').value)||0});saveD();document.getElementById('so-form').style.display='none';document.getElementById('so-list').innerHTML=renderSOList();toast('Site order saved.');}
+
+// ════════════════════════════════════════════════════
+//  ABSTRACT
+// ════════════════════════════════════════════════════
+function rAbstract(){const mc=document.getElementById('mb-content');if(!MBD.projects.length){mc.innerHTML='<div class="empty" style="margin-top:3rem;"><span class="ei">◧</span>Add projects first.</div>';return;}mc.innerHTML='<div class="card"><div class="ch"><span class="ct">Abstract of cost</span><select onchange="loadAbstract(this.value)" style="font-size:12px;padding:5px 8px;border:1px solid var(--bdr2);border-radius:var(--r);"><option value="">Select project...</option>'+MBD.projects.map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('')+'</select></div><div class="cb" id="abs-c"><div class="empty">Select a project.</div></div></div>';}
+function loadAbstract(id){if(!id)return;const p=gp(id);const ac=document.getElementById('abs-c');if(!p)return;const bi=MBD.boq.filter(b=>b.proj===id);const bills=MBD.raBills.filter(r=>r.proj===id);const tBoq=bi.reduce((s,b)=>s+b.amount,0);const tGross=bills.reduce((s,r)=>s+r.gross,0);const tNet=bills.reduce((s,r)=>s+r.net,0);const pct=tBoq?Math.min(100,Math.round(tGross/tBoq*100)):0;ac.innerHTML='<div style="border:1px solid var(--bdr);border-radius:var(--r);padding:1rem;margin-bottom:1rem;background:var(--sur2);"><strong style="font-size:14px;">'+p.name+'</strong><br><span style="font-size:11.5px;color:var(--txt2);">'+p.type+' | '+p.location+' | '+p.contractor+' | WO: '+p.wo+'</span></div><div class="mets" style="margin-bottom:1rem;"><div class="met"><div class="ml">Contract value</div><div class="mv mv-s mono">Nu. '+fmt(p.value)+'</div><span class="ew">'+numToWords(p.value)+'</span></div><div class="met"><div class="ml">Total BOQ</div><div class="mv mv-s mono">Nu. '+fmt(tBoq)+'</div></div><div class="met"><div class="ml">RA gross</div><div class="mv mv-s mv-g mono">Nu. '+fmt(tGross)+'</div></div><div class="met"><div class="ml">Work done</div><div class="mv mv-s '+(pct>80?'mv-g':pct>50?'mv-a':'mv-r')+'">'+pct+'%</div></div></div>'+(bi.length?'<div class="tw"><table><thead><tr><th>Item</th><th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th><th>In words</th></tr></thead><tbody>'+bi.map(b=>'<tr><td class="mono">'+(b.item||'—')+'</td><td>'+b.desc+'</td><td class="mono">'+b.qty+'</td><td class="mono">'+fmt(b.rate)+'</td><td class="mono"><strong>'+fmt(b.amount)+'</strong></td><td style="font-size:10px;color:var(--txt2);font-style:italic;">'+numToWords(b.amount)+'</td></tr>').join('')+'</tbody><tfoot><tr><td colspan="4" style="text-align:right;">Total BOQ</td><td class="mono">Nu. '+fmt(tBoq)+'</td><td style="font-size:10px;color:var(--txt2);font-style:italic;">'+numToWords(tBoq)+'</td></tr></tfoot></table></div>':'<div class="empty">No BOQ items.</div>')+'<div style="margin-top:1rem;padding:1rem;background:var(--sur2);border-radius:var(--r);display:flex;gap:1.5rem;flex-wrap:wrap;font-size:12.5px;"><div><span style="color:var(--txt2);">Net RA paid:</span> <strong class="mono">Nu. '+fmt(tNet)+'</strong></div><div><span style="color:var(--txt2);">Balance:</span> <strong class="mono">Nu. '+fmt(tBoq-tGross)+'</strong></div></div>';}
+
+// ════════════════════════════════════════════════════
+//  REPORTS
+// ════════════════════════════════════════════════════
+function rReports(){const mc=document.getElementById('mb-content');if(!MBD.projects.length){mc.innerHTML='<div class="empty" style="margin-top:3rem;"><span class="ei">◫</span>Add projects first.</div>';return;}mc.innerHTML=MBD.projects.map(p=>{const bills=MBD.raBills.filter(r=>r.proj===p.id);const boqL=MBD.boq.filter(b=>b.proj===p.id);const buds=MBD.budget.filter(b=>b.proj===p.id);const tBoq=boqL.reduce((s,b)=>s+b.amount,0);const tGross=bills.reduce((s,r)=>s+r.gross,0);const tNet=bills.reduce((s,r)=>s+r.net,0);const tSanc=buds.reduce((s,b)=>s+b.sanctioned,0);const tExp=buds.reduce((s,b)=>s+b.expended,0);const pct=tBoq?Math.min(100,Math.round(tGross/tBoq*100)):0;const bpct=tSanc?Math.min(100,Math.round(tExp/tSanc*100)):0;return'<div class="card"><div class="cb"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:1rem;"><div><div style="font-size:14px;font-weight:700;">'+p.name+'</div><span class="ttag">'+p.type+'</span> <span style="font-size:11.5px;color:var(--txt2);">'+p.location+' | '+p.contractor+'</span></div><span class="pill p-'+p.status.toLowerCase()+'">'+p.status+'</span></div><div class="mets" style="margin-bottom:1rem;"><div class="met"><div class="ml">Contract value</div><div class="mv mv-s mono">Nu. '+fmt(p.value)+'</div></div><div class="met"><div class="ml">BOQ amount</div><div class="mv mv-s mono">Nu. '+fmt(tBoq)+'</div></div><div class="met"><div class="ml">Net RA paid</div><div class="mv mv-s mv-g mono">Nu. '+fmt(tNet)+'</div></div><div class="met"><div class="ml">Work done</div><div class="mv mv-s '+(pct>80?'mv-g':pct>50?'mv-a':'mv-r')+'">'+pct+'%</div></div><div class="met"><div class="ml">Budget used</div><div class="mv mv-s '+(bpct>90?'mv-r':bpct>70?'mv-a':'mv-g')+'">'+bpct+'%</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;"><div class="sr"><span style="color:var(--txt2);">Approved RA bills</span><strong>'+bills.length+'</strong></div><div class="sr"><span style="color:var(--txt2);">BOQ items</span><strong>'+boqL.length+'</strong></div><div class="sr"><span style="color:var(--txt2);">Measurements</span><strong>'+MBD.meas.filter(m=>m.proj===p.id).length+'</strong></div><div class="sr"><span style="color:var(--txt2);">Site orders</span><strong>'+MBD.siteOrders.filter(s=>s.proj===p.id).length+'</strong></div></div><div style="margin-top:1rem;"><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:4px;"><span style="color:var(--txt2);">Work completion</span><span>'+pct+'%</span></div><div class="pb" style="height:7px;"><div class="pf" style="width:'+pct+'%"></div></div></div></div></div>';}).join('');}
+
+// ════════════════════════════════════════════════════
+//  DASHBOARD
+// ════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════
+//  DOWNLOADS (Feature 1 & 6)
+//  All uploaded files, project-wise, category-wise
+// ════════════════════════════════════════════════════
+function rDownloads(){
+  var mc=document.getElementById('mb-content');
+  if(!MBD.projects.length){
+    mc.innerHTML='<div class="empty" style="margin-top:3rem;"><span class="ei">⬇</span>Add projects first to see downloads.</div>';
+    return;
+  }
+  var html='<div class="card"><div class="ch"><span class="ct">⬇ Downloads — All uploaded files</span></div><div class="cb"><div class="ib ib-b">All files uploaded across BOQ, Measurements, RA Bills, Accounts — organised by project and category. Click any file to download or view.</div></div></div>';
+
+  MBD.projects.forEach(function(p){
+    // Collect all files for this project
+    var cats={
+      'BOQ Files': [],
+      'Measurement Files': [],
+      'RA Bills (Pending)': [],
+      'RA Bills (Approved)': [],
+      'Accounts Submission': [],
+      'Site Order Files': []
+    };
+    // BOQ
+    MBD.boq.filter(function(b){return b.proj===p.id;}).forEach(function(b){
+      (b.files||[]).forEach(function(f){cats['BOQ Files'].push({file:f,ref:'BOQ: '+b.item+' — '+b.desc});});
+    });
+    // Measurements
+    MBD.meas.filter(function(m){return m.proj===p.id;}).forEach(function(m){
+      (m.files||[]).forEach(function(f){cats['Measurement Files'].push({file:f,ref:'Meas: '+m.desc+' ('+m.raNo+')'});});
+    });
+    // RA bills pending
+    MBD.pending.filter(function(b){return b.proj===p.id;}).forEach(function(b){
+      (b.files||[]).forEach(function(f){cats['RA Bills (Pending)'].push({file:f,ref:'Bill: '+b.no+' — '+b.rno+' ('+b.status+')'});});
+    });
+    // RA bills approved
+    MBD.raBills.filter(function(b){return b.proj===p.id;}).forEach(function(b){
+      (b.files||[]).forEach(function(f){cats['RA Bills (Approved)'].push({file:f,ref:'Approved Bill: '+b.no+' — '+b.rno});});
+    });
+    // Accounts log
+    MBD.accountsLog.filter(function(a){return a.proj===p.id;}).forEach(function(a){
+      (a.files||[]).forEach(function(f){cats['Accounts Submission'].push({file:f,ref:'Accounts: Bill '+a.billNo});});
+    });
+    // Site orders
+    MBD.siteOrders.filter(function(s){return s.proj===p.id;}).forEach(function(s){
+      (s.files||[]).forEach(function(f){cats['Site Order Files'].push({file:f,ref:'SO: '+s.title});});
+    });
+
+    var totalFiles=Object.values(cats).reduce(function(s,v){return s+v.length;},0);
+    if(!totalFiles)return;
+
+    html+='<div class="card">'
+      +'<div class="ch" style="background:var(--grnl);cursor:pointer;" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'\':\'none\'">'
+      +'<div><span class="ct">📁 '+p.name+'</span><div style="font-size:11.5px;color:var(--txt2);margin-top:2px;">'+(p.contractor||'—')+' · '+totalFiles+' file'+(totalFiles!==1?'s':'')+' total</div></div>'
+      +'<span class="ttag">'+p.type+'</span>'
+      +'</div>'
+      +'<div style="padding:.875rem;">';
+
+    Object.keys(cats).forEach(function(catName){
+      var items=cats[catName];
+      if(!items.length)return;
+      html+='<div style="margin-bottom:1.125rem;">'
+        +'<div style="font-size:11px;font-weight:600;color:var(--txt2);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.5rem;padding:.375rem .625rem;background:var(--sur2);border-radius:var(--r);">'+catName+' ('+items.length+')</div>'
+        +'<div style="display:flex;flex-direction:column;gap:6px;">';
+      items.forEach(function(item){
+        var f=item.file;
+        var ext=(f.name||'').split('.').pop().toLowerCase();
+        var isImg=['jpg','jpeg','png','gif','webp'].indexOf(ext)>-1;
+        var icon=f.name.endsWith('.pdf')?'📄':isImg?'🖼️':['xlsx','xls','csv'].indexOf(ext)>-1?'📊':['doc','docx'].indexOf(ext)>-1?'📝':'📎';
+        html+='<div style="display:flex;align-items:center;gap:10px;padding:.625rem .875rem;border:1px solid var(--bdr);border-radius:var(--r);background:var(--sur);">'
+          +'<span style="font-size:1.25rem;flex-shrink:0;">'+icon+'</span>'
+          +'<div style="flex:1;min-width:0;">'
+          +'<div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+f.name+'">'+f.name+'</div>'
+          +'<div style="font-size:11px;color:var(--txt2);">'+item.ref+' · '+(f.size?fSz(f.size):'')+'</div>'
+          +'</div>'
+          +'<div style="display:flex;gap:6px;flex-shrink:0;">'
+          +(isImg?'<button class="btn btn-at btn-sm" onclick=\'dlFile('+JSON.stringify(f).replace(/'/g,"&#39;")+')\'>👁 View</button>':'')
+          +'<button class="btn btn-p btn-sm" onclick=\'dlFile('+JSON.stringify(f).replace(/'/g,"&#39;")+')\'>⬇ Download</button>'
+          +'</div>'
+          +'</div>';
+      });
+      html+='</div></div>';
+    });
+
+    html+='</div></div>';
+  });
+
+  mc.innerHTML=html;
+}
+
+function dlFile(f){
+  if(!f||!f.dataUrl)return;
+  var ext=(f.name||'').split('.').pop().toLowerCase();
+  if(['jpg','jpeg','png','gif','webp'].indexOf(ext)>-1){
+    // Show in image viewer
+    document.getElementById('imgn').textContent=f.name;
+    var img=document.getElementById('imgs');
+    img.src=f.dataUrl;img._dl=f.name;
+    document.getElementById('m-img').classList.add('open');
+  }else{
+    var a=document.createElement('a');
+    a.href=f.dataUrl;
+    a.download=f.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast('⬇ Downloading: '+f.name);
+  }
+}
+
+function rDash(){
+  const mc=document.getElementById('mb-content');
+  const tRa=MBD.raBills.reduce((s,r)=>s+r.net,0);
+  const tSanc=MBD.budget.reduce((s,b)=>s+b.sanctioned,0),tExp=MBD.budget.reduce((s,b)=>s+b.expended,0),bpct=tSanc?Math.round(tExp/tSanc*100):0;
+  const pendCount=MBD.pending.filter(b=>b.status==='submitted').length;
+  const myBills=MBD.pending.filter(b=>b.submittedBy===CU.name);
+  const myApproved=MBD.raBills.filter(b=>b.submittedBy===CU.name);
+  const emailBanner=emailOk()?'':'<div style="background:#fff8e6;border:1px solid #f5dba0;border-radius:var(--rl);padding:1.125rem 1.25rem;margin-bottom:1.25rem;display:flex;align-items:flex-start;gap:12px;"><span style="font-size:1.75rem;flex-shrink:0;">📧</span><div style="flex:1;"><div style="font-size:13.5px;font-weight:700;color:var(--amb);margin-bottom:.375rem;">Email notifications not connected</div><div style="font-size:12.5px;color:var(--txt2);margin-bottom:.75rem;">Connect EmailJS (free) to receive real emails when bills are submitted, approved or rejected.</div><div style="font-size:12px;color:var(--txt2);background:var(--sur2);border-radius:var(--r);padding:.875rem;"><strong style="display:block;margin-bottom:.5rem;">Setup (5 min, free):</strong>1. Go to emailjs.com → sign up<br>2. Add Email Service (connect Gmail)<br>3. Create Email Template with variables: {{to_name}} {{to_email}} {{subject}} {{message}}<br>4. Copy Service ID, Template ID, Public Key<br>5. Paste below and save:<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:.75rem;"><input id="em-svc" placeholder="Service ID" style="flex:1;border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 9px;font-size:12px;"><input id="em-tpl" placeholder="Template ID" style="flex:1;border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 9px;font-size:12px;"><input id="em-key" placeholder="Public Key" style="flex:1;border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 9px;font-size:12px;"><button class="btn btn-p btn-sm" onclick="saveEmailCfg()">Save</button></div></div></div></div>';
+  let mets='';
+  if(CU.role==='chief'){mets='<div class="met"><div class="ml">Projects</div><div class="mv">'+MBD.projects.length+'</div></div><div class="met"><div class="ml">Pending approval</div><div class="mv '+(pendCount>0?'mv-a':'')+'">'+pendCount+'</div></div><div class="met"><div class="ml">Approved bills</div><div class="mv mv-g">'+MBD.raBills.length+'</div></div><div class="met"><div class="ml">Total net approved</div><div class="mv mv-s mv-g mono">Nu. '+fmt(tRa)+'</div></div>';}
+  else if(CU.role==='accounts'){mets='<div class="met"><div class="ml">Approved bills</div><div class="mv mv-g">'+MBD.raBills.length+'</div></div><div class="met"><div class="ml">Bills received</div><div class="mv mv-b">'+MBD.accountsLog.length+'</div></div><div class="met"><div class="ml">Total net</div><div class="mv mv-s mv-g mono">Nu. '+fmt(tRa)+'</div></div>';}
+  else{const myP=myBills.filter(b=>b.status!=='rejected'&&b.status!=='draft').length;const myR=myBills.filter(b=>b.status==='rejected').length;mets='<div class="met"><div class="ml">Projects</div><div class="mv">'+MBD.projects.length+'</div></div><div class="met"><div class="ml">Bills submitted</div><div class="mv mv-b">'+myBills.length+'</div></div><div class="met"><div class="ml">Pending approval</div><div class="mv '+(myP>0?'mv-a':'')+'">'+myP+'</div></div><div class="met"><div class="ml">Bills approved</div><div class="mv mv-g">'+myApproved.length+'</div></div>'+(myR?'<div class="met"><div class="ml">Bills rejected</div><div class="mv mv-r">'+myR+'</div></div>':'')+'<div class="met"><div class="ml">BOQ items</div><div class="mv">'+MBD.boq.length+'</div></div>';}
+  mc.innerHTML=emailBanner
+    +(CU.role==='chief'&&pendCount>0?'<div class="ib ib-a" style="cursor:pointer;" onclick="showSec(\'ra-pending\')">⏳ <strong>'+pendCount+' RA bill'+(pendCount>1?'s':'')+' awaiting your approval.</strong> Click to review.</div>':'')
+    +(CU.role==='engineer'&&myBills.filter(b=>b.status==='rejected').length?'<div class="ib ib-r" style="cursor:pointer;" onclick="showSec(\'ra-status\')">❌ <strong>'+myBills.filter(b=>b.status==='rejected').length+' bill rejected.</strong> Click to view reason and resubmit.</div>':'')
+    +'<div class="mets">'+mets+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1.125rem;padding:.875rem 1rem;background:var(--grnl);border:1px solid #b2ddc3;border-radius:var(--rl);">'
+    +'<span style="font-size:12.5px;font-weight:600;color:var(--grn);flex:1;">🔒 Data Protection</span>'
+    +'<button class="btn btn-sm" style="background:var(--grn);color:#fff;border-color:var(--grn);" onclick="syncFromCloud()">☁️ Sync from Cloud</button>'
+    +'<button class="btn btn-sm btn-at" onclick="exportBackup()">⬇ Download Backup</button>'
+    +'<label class="btn btn-sm" style="cursor:pointer;background:var(--ambb);color:var(--amb);border-color:#f5dba0;">📂 Restore Backup<input type="file" accept=".json" style="display:none;" onchange="importBackup(event)"></label>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.125rem;">'
+    +'<div class="card"><div class="ch"><span class="ct">Recent approved bills</span></div><div class="tw">'+(MBD.raBills.length?'<table><thead><tr><th>Bill no.</th><th>Net (Nu.)</th><th>In words</th><th>Approved</th></tr></thead><tbody>'+[...MBD.raBills].reverse().slice(0,5).map(r=>'<tr><td class="mono">'+r.no+'</td><td class="mono mv-g">Nu. '+fmt(r.net)+'</td><td style="font-size:10px;color:var(--txt2);font-style:italic;">'+numToWords(r.net)+'</td><td style="font-size:11px;">'+r.approvedAt+'</td></tr>').join('')+'</tbody></table>':'<div class="empty" style="padding:1.5rem;">No approved bills yet.</div>')+'</div></div>'
+    +'<div class="card"><div class="ch"><span class="ct">Budget utilization</span></div><div class="cb">'+(MBD.budget.length?MBD.budget.map(b=>{const pct=b.sanctioned?Math.min(100,Math.round(b.expended/b.sanctioned*100)):0;return'<div style="margin-bottom:10px;"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span>'+b.head+'</span><span style="color:var(--txt2);">'+pct+'%</span></div><div class="pb"><div class="pf '+(pct>90?'pf-r':pct>70?'pf-a':'')+'" style="width:'+pct+'%"></div></div></div>';}).join(''):'<div class="empty" style="padding:1rem;">No budget heads.</div>')+'</div></div>'
+    +'</div>';
+  updNotif();
+}
+function exportBackup(){
+  if(!MBD){toast('No data to export.','tamb');return;}
+  var data = JSON.stringify(MBD, null, 2);
+  var blob = new Blob([data], {type:'application/json'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'mbbook_backup_'+(CC?CC.name:'data')+'_'+new Date().toISOString().split('T')[0]+'.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('✅ Backup downloaded to your computer.');
+}
+
+function importBackup(event){
+  var file = event.target.files[0];
+  if(!file){return;}
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try{
+      var data = JSON.parse(e.target.result);
+      Object.assign(MBD, data);
+      saveD();
+      toast('✅ Backup restored successfully!');
+      showSec('dashboard');
+    }catch(err){
+      toast('❌ Invalid backup file.','terr');
+    }
+  };
+  reader.readAsText(file);
+}
+
+function syncFromCloud(){
+  if(!CC||!MBD){return;}
+  toast('🔄 Syncing from cloud...','tblu');
+  getMBDataFromCloud(CC.id, function(cloudData){
+    MBD = cloudData;
+    saveD();
+    toast('✅ Data synced from cloud successfully!');
+    showSec('dashboard');
+  });
+}
+
+function saveEmailCfg(){EMAIL_CFG.svc=(document.getElementById('em-svc')?.value||'').trim();EMAIL_CFG.tpl=(document.getElementById('em-tpl')?.value||'').trim();EMAIL_CFG.key=(document.getElementById('em-key')?.value||'').trim();localStorage.setItem('mb_em_svc',EMAIL_CFG.svc);localStorage.setItem('mb_em_tpl',EMAIL_CFG.tpl);localStorage.setItem('mb_em_key',EMAIL_CFG.key);if(emailOk()){try{emailjs.init({publicKey:EMAIL_CFG.key});}catch(e){}}toast('✅ Email config saved!');rDash();}
+
+// ════════════════════════════════════════════════════
+//  START
+// ════════════════════════════════════════════════════
+goPage('pg-home');
+</script>
+</body>
+</html>
