@@ -30,6 +30,33 @@ const db = firebase.firestore();
 // Saves all MB data to Firestore cloud
 // Data never deleted even if cache cleared
 // ══════════════════════════════════════
+// Save committee meta to global registry (so all users can see it in search)
+function saveCommMetaFirebase(commMeta) {
+  if(!commMeta || !commMeta.id) return;
+  db.collection('committee_registry').doc(commMeta.id).set({
+    id: commMeta.id,
+    name: commMeta.name,
+    code: commMeta.code,
+    dept: commMeta.dept || '',
+    loc: commMeta.loc || '',
+    createdAt: commMeta.createdAt
+  }).catch(function(e){ console.warn('Registry save error:', e); });
+}
+
+// Load all committees from Firestore registry
+function loadCommListFirebase(callback) {
+  db.collection('committee_registry').get()
+    .then(function(snapshot) {
+      var list = [];
+      snapshot.forEach(function(doc) { list.push(doc.data()); });
+      callback(list);
+    })
+    .catch(function(e) {
+      console.warn('Registry load error:', e);
+      callback(null);
+    });
+}
+
 function saveDFirebase(commId, data) {
   if(!commId || !data) return;
   try {
@@ -681,7 +708,14 @@ function setLs(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
 function getPortal(){return getLs(PORTAL_KEY)||{committees:[]};}
 function savePortal(p){setLs(PORTAL_KEY,p);}
 function getCommData(id){return getLs('mbc_'+id);}
-function saveCommData(id,d){setLs('mbc_'+id,d);}
+function saveCommData(id,d){
+  setLs('mbc_'+id,d);
+  // Also sync to Firestore so other devices get updated user lists/approvals
+  if(id && d){
+    db.collection('committees').doc(id).collection('commdata').doc('main').set(d)
+      .catch(function(e){ console.warn('CommData sync error:', e); });
+  }
+}
 function getMBData(id){
   // First get from localStorage (immediate)
   const d=getLs('mbdata_'+id)||{};
@@ -766,26 +800,97 @@ function genKey(){const c='ABCDEFGHJKLMNPQRSTUVWXYZ2345679';const seg=n=>Array.f
 //  COMMITTEE LIST
 // ════════════════════════════════════════════════════
 function renderList(search=''){
-  const portal=getPortal();
   const el=document.getElementById('cl-list');if(!el)return;
-  let comms=portal.committees;
-  if(search)comms=comms.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.code.toLowerCase().includes(search.toLowerCase()));
-  if(!comms.length){el.innerHTML='<div class="cl-empty">No committees found.<br><br><button class="btn btn-p btn-sm" onclick="goPage(\'pg-create\');genKey()">Create new committee →</button></div>';return;}
-  el.innerHTML=comms.map(function(c){
-    const d=getCommData(c.id);
-    const members=(d&&d.users?d.users.filter(u=>u.status==='active').length:1);
-    return '<div class="cl-item" onclick="selectComm(\''+c.id+'\')">'
-      +'<div><div class="cl-name">'+c.name+'</div><div class="cl-sub">'+c.code+(c.dept?' · '+c.dept:'')+'</div></div>'
-      +'<div><span class="cl-badge">'+members+' member'+(members!==1?'s':'')+'</span></div>'
-      +'</div>';
-  }).join('');
+  el.innerHTML='<div class="cl-empty">🔄 Loading committees...</div>';
+
+  loadCommListFirebase(function(firebaseComms) {
+    // Merge Firebase registry with local committees (avoid duplicates)
+    const portal=getPortal();
+    const localComms=portal.committees||[];
+    const merged={};
+    // Add local first
+    localComms.forEach(function(c){ merged[c.id]=c; });
+    // Add/overwrite from Firebase (cloud is authoritative for discovery)
+    if(firebaseComms && firebaseComms.length){
+      firebaseComms.forEach(function(c){ merged[c.id]=c; });
+      // Sync any new cloud committees into local portal for offline use
+      var changed=false;
+      firebaseComms.forEach(function(c){
+        if(!portal.committees.find(function(lc){return lc.id===c.id;})){
+          portal.committees.push(c);
+          changed=true;
+        }
+      });
+      if(changed) savePortal(portal);
+    }
+
+    let comms=Object.values(merged);
+    if(search) comms=comms.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.code.toLowerCase().includes(search.toLowerCase()));
+
+    if(!comms.length){
+      el.innerHTML='<div class="cl-empty">No committees found.<br><br><button class="btn btn-p btn-sm" onclick="goPage(\'pg-create\');genKey()">Create new committee →</button></div>';
+      return;
+    }
+    el.innerHTML=comms.map(function(c){
+      const d=getCommData(c.id);
+      const members=(d&&d.users?d.users.filter(u=>u.status==='active').length:1);
+      return '<div class="cl-item" onclick="selectComm(\''+c.id+'\')">'
+        +'<div><div class="cl-name">'+c.name+'</div><div class="cl-sub">'+c.code+(c.dept?' · '+c.dept:'')+'</div></div>'
+        +'<div><span class="cl-badge">'+members+' member'+(members!==1?'s':'')+'</span></div>'
+        +'</div>';
+    }).join('');
+  });
 }
 
 function selectComm(id){
   const portal=getPortal();
+  // CC may come from local portal or merged cloud list
   CC=portal.committees.find(c=>c.id===id);
+  if(!CC){
+    // Try from Firebase registry (already merged into portal by renderList, but just in case)
+    toast('Loading committee...','');
+    loadCommListFirebase(function(list){
+      if(list) CC=list.find(c=>c.id===id);
+      if(!CC){toast('Committee not found.','terr');return;}
+      // Save to local portal for next time
+      const p=getPortal();
+      if(!p.committees.find(c=>c.id===id)){p.committees.push(CC);savePortal(p);}
+      _selectCommUI(id);
+    });
+    return;
+  }
+  _selectCommUI(id);
+}
+
+function _selectCommUI(id){
   CCD=getCommData(id);
-  if(!CC||!CCD){toast('Committee not found.','terr');return;}
+  // If CCD is missing (user is on a different device), load it from Firestore
+  if(!CCD){
+    // Load committee user data (users list + key) from Firestore
+    db.collection('committees').doc(id).collection('commdata').doc('main').get()
+      .then(function(doc){
+        if(doc.exists){
+          CCD=doc.data();
+          saveCommData(id, CCD); // cache locally
+        } else {
+          // No commdata in Firestore yet — committee exists but user data not synced
+          // Create a minimal CCD so the gate page can open (login/register will validate key)
+          CCD={id:id, users:[], log:[]};
+        }
+        _openGatePage();
+      })
+      .catch(function(e){
+        console.warn('CommData load error:', e);
+        CCD={id:id, users:[], log:[]};
+        _openGatePage();
+      });
+    return;
+  }
+  _openGatePage();
+}
+
+function _openGatePage(){
+  if(!CC){toast('Committee not found.','terr');return;}
   document.getElementById('gi').textContent='📗';
   document.getElementById('gn').textContent=CC.name;
   document.getElementById('gs').textContent=CC.code+(CC.dept?' · '+CC.dept:'');
@@ -835,6 +940,10 @@ function createComm(){
   saveCommData(id,commData);
   portal.committees.push(commMeta);
   savePortal(portal);
+  saveCommMetaFirebase(commMeta); // ← publish to shared registry so others can find it
+  // Also save commData (users + key) to Firestore for cross-device login/register
+  db.collection('committees').doc(id).collection('commdata').doc('main').set(commData)
+    .catch(function(e){ console.warn('CommData Firebase save error:', e); });
   CC=commMeta;CCD=commData;
   toast('✅ Committee "'+name+'" created!');
   // Go to gate pre-filled
