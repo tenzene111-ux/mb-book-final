@@ -752,10 +752,18 @@ function savePortal(p){setLs(PORTAL_KEY,p);}
 function getCommData(id){return getLs('mbc_'+id);}
 function saveCommData(id,d){
   setLs('mbc_'+id,d);
-  // Also sync to Firestore so other devices get updated user lists/approvals
   if(id && d){
+    // Ensure key is in commdata
+    if(CC && CC.key && !d.key) d.key = CC.key;
     db.collection('committees').doc(id).collection('commdata').doc('main').set(d)
       .catch(function(e){ console.warn('CommData sync error:', e); });
+    // Also keep registry up to date with key
+    if(CC && CC.id===id && CC.key){
+      db.collection('committee_registry').doc(id).set({
+        id:id, name:CC.name||'', code:CC.code||'', dept:CC.dept||'',
+        loc:CC.loc||'', key:CC.key, createdAt:CC.createdAt||''
+      }).catch(function(){});
+    }
   }
 }
 function getMBData(id){
@@ -803,6 +811,15 @@ function toast(msg,cls=''){const t=document.createElement('div');t.className='to
 function showPop(ic,ti,ms){document.getElementById('pop-ic').textContent=ic;document.getElementById('pop-ti').textContent=ti;document.getElementById('pop-ms').textContent=ms;document.getElementById('pop').classList.add('open');}
 function closeM(id){document.getElementById(id).classList.remove('open');}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+function normalizeKey(k){
+  // Uppercase and replace commonly confused characters so typos don't fail
+  return (k||'').trim().toUpperCase()
+    .replace(/0/g,'O')   // zero → letter O
+    .replace(/1/g,'I')   // one  → letter I
+    .replace(/5/g,'S')   // 5    → S
+    .replace(/8/g,'B')   // 8    → B
+    .replace(/2/g,'Z');  // 2    → Z (less common but still confusable)
+}
 function hashPw(pw){let h=5381;for(let i=0;i<pw.length;i++){h=((h<<5)+h)+pw.charCodeAt(i);h|=0;}return'H'+Math.abs(h).toString(36)+(pw.length*13).toString(36);}
 function setErr(id,msg){const e=document.getElementById(id);if(e){e.textContent=msg;e.classList.add('on');}}
 function clearErr(id){const e=document.getElementById(id);if(e)e.classList.remove('on');}
@@ -924,9 +941,9 @@ function _selectCommUI(id){
         if(doc.exists){
           CCD=doc.data();
           saveCommData(id, CCD); // cache locally
+          // If CC.key is missing, get it from commdata
+          if(!CC.key && CCD.key) CC.key = normalizeKey(CCD.key);
         } else {
-          // No commdata in Firestore yet — committee exists but user data not synced
-          // Create a minimal CCD so the gate page can open (login/register will validate key)
           CCD={id:id, users:[], log:[]};
         }
         _openGatePage();
@@ -987,8 +1004,8 @@ function createComm(){
   const portal=getPortal();
   if(portal.committees.find(c=>c.code===code)){setErr('cn-err','Code "'+code+'" already taken. Choose another.');return;}
   const id=uid();
-  const commMeta={id,name,code,dept,loc,key:gKey,createdAt:new Date().toISOString()};
-  const commData={id,users:[{id:uid(),name:an,email:ae,password:hashPw(ap),role:'admin',designation:'System Administrator',division:'',status:'active',addedBy:'Setup',addedAt:new Date().toLocaleString('en-GB'),lastLogin:null}],log:[{action:'CREATED',user:ae,detail:'Committee created: '+name,status:'success',time:new Date().toLocaleString('en-GB'),ts:Date.now()}]};
+  const commMeta={id,name,code,dept,loc,key:normalizeKey(gKey),createdAt:new Date().toISOString()};
+  const commData={id,key:normalizeKey(gKey),users:[{id:uid(),name:an,email:ae,password:hashPw(ap),role:'admin',designation:'System Administrator',division:'',status:'active',addedBy:'Setup',addedAt:new Date().toLocaleString('en-GB'),lastLogin:null}],log:[{action:'CREATED',user:ae,detail:'Committee created: '+name,status:'success',time:new Date().toLocaleString('en-GB'),ts:Date.now()}]};
   saveCommData(id,commData);
   portal.committees.push(commMeta);
   savePortal(portal);
@@ -1017,49 +1034,51 @@ function doLogin(){
   if(!CC||!CCD){setErr('lerr','No committee selected. Go back and pick your committee.');return;}
   const email=(document.getElementById('li-em')?.value||'').trim().toLowerCase();
   const pw=document.getElementById('li-pw')?.value||'';
-  const key=(document.getElementById('li-key')?.value||'').trim().toUpperCase();
+  const key=normalizeKey(document.getElementById('li-key')?.value||'');
   if(!email||!pw||!key){setErr('lerr','Please fill in email, password and committee key.');return;}
 
   function _finishLogin(commKey){
-    // Check key
-    if(key!==commKey){setErr('lerr','Wrong committee key. Ask your admin for the correct key.');addLog('LOGIN_FAIL',email,'Wrong key','fail');return;}
-    // Find user
+    if(!commKey){setErr('lerr','Could not retrieve committee key. Ask admin to sign in once to sync.');return;}
+    if(key!==normalizeKey(commKey)){setErr('lerr','Wrong committee key. Ask your admin for the correct key.');return;}
     const user=CCD.users.find(u=>u.email===email);
-    if(!user){setErr('lerr','No account found for this email. Use "Request access" to register.');addLog('LOGIN_FAIL',email,'User not found','fail');return;}
-    if(user.status==='pending'){addLog('LOGIN_PENDING',email,'Pending user','fail');document.getElementById('pend-msg').textContent='Your access request for '+CC.name+' is still pending admin approval. Submitted: '+user.addedAt;goPage('pg-pending');return;}
+    if(!user){setErr('lerr','No account found for this email. Use "Request access" to register.');return;}
+    if(user.status==='pending'){document.getElementById('pend-msg').textContent='Your access request for '+CC.name+' is still pending admin approval.';goPage('pg-pending');return;}
     if(user.status==='blocked'){setErr('lerr','Your account is blocked. Contact your admin.');return;}
-    if(hashPw(pw)!==user.password){setErr('lerr','Wrong password. Please try again.');addLog('LOGIN_FAIL',email,'Wrong password','fail');return;}
+    if(hashPw(pw)!==user.password){setErr('lerr','Wrong password. Please try again.');return;}
     if(user.role!=='admin'&&user.role!==selRL){setErr('lerr','Your role is "'+user.role+'". Please select the correct role above.');return;}
     user.lastLogin=new Date().toLocaleString('en-GB');
     saveCommData(CC.id,CCD);
-    addLog('LOGIN',email,'Signed in as '+user.role,'success');
     CU=user;
     MBD=getMBData(CC.id);
     if(!MBD.users.find(u=>u.email===email)){MBD.users.push({name:user.name,email:user.email,role:user.role,division:user.division||'',designation:user.designation||'',lastLogin:new Date().toLocaleString('en-GB')});}
     else{const mu=MBD.users.find(u=>u.email===email);mu.lastLogin=new Date().toLocaleString('en-GB');mu.role=user.role;}
     saveD();
-    if(user.role==='admin'){launchAdmin();}
-    else{launchMB(user.role==='admin'?selRL:user.role);}
+    if(user.role==='admin'){
+      setTimeout(function(){ saveCommMetaFirebase(CC); if(CCD) db.collection('committees').doc(CC.id).collection('commdata').doc('main').set(CCD).catch(function(){}); },1500);
+      launchAdmin();
+    } else { launchMB(user.role); }
   }
 
-  if(CC.key){
-    _finishLogin(CC.key);
-  } else {
-    // Key missing — fetch from Firestore registry
-    db.collection('committee_registry').doc(CC.id).get()
-      .then(function(doc){
-        if(doc.exists && doc.data().key){
-          CC.key=doc.data().key;
-          var p=getPortal();var lc=p.committees.find(function(c){return c.id===CC.id;});
-          if(lc){lc.key=CC.key;savePortal(p);}
-          _finishLogin(CC.key);
-        } else {
-          db.collection('committees').doc(CC.id).collection('commdata').doc('main').get()
-            .then(function(d2){ var k=d2.exists?(d2.data().key||''):''; if(k)CC.key=k; _finishLogin(k); })
-            .catch(function(){ setErr('lerr','Could not verify key. Check internet connection.'); });
-        }
-      }).catch(function(){ setErr('lerr','Could not verify key. Check internet connection.'); });
-  }
+  // ALWAYS fetch key fresh from Firebase — never trust cached CC.key
+  // Try registry first, then commdata as fallback
+  db.collection('committee_registry').doc(CC.id).get()
+    .then(function(doc){
+      var k = doc.exists ? normalizeKey(doc.data().key||'') : '';
+      if(k){ CC.key=k; _finishLogin(k); return; }
+      // No key in registry — try commdata
+      return db.collection('committees').doc(CC.id).collection('commdata').doc('main').get()
+        .then(function(d2){
+          var k2 = d2.exists ? normalizeKey(d2.data().key||'') : '';
+          if(k2){ CC.key=k2; _finishLogin(k2); return; }
+          // Last resort — use locally cached key
+          var localKey = normalizeKey(CC.key||'');
+          _finishLogin(localKey);
+        });
+    })
+    .catch(function(){
+      // Offline — fall back to local key
+      _finishLogin(normalizeKey(CC.key||''));
+    });
 }
 
 // ════════════════════════════════════════════════════
@@ -1071,59 +1090,38 @@ function doRegister(){
   const name=(document.getElementById('ri-nm')?.value||'').trim();
   const email=(document.getElementById('ri-em')?.value||'').trim().toLowerCase();
   const pw=document.getElementById('ri-pw')?.value||'';
-  const key=(document.getElementById('ri-key')?.value||'').trim().toUpperCase();
+  const key=normalizeKey(document.getElementById('ri-key')?.value||'');
   const des=(document.getElementById('ri-de')?.value||'').trim();
   const div=(document.getElementById('ri-dv')?.value||'').trim();
   if(!name||!email||!pw||!key){setErr('rerr','All fields marked * are required.');return;}
   if(pw.length<6){setErr('rerr','Password must be at least 6 characters.');return;}
 
-  // If CC.key is missing (committee loaded from cloud registry without key),
-  // fetch the key from commdata in Firestore before validating
   function _finishRegister(commKey){
-    if(key!==commKey){setErr('rerr','Wrong committee key. You cannot register without the correct key from your admin.');addLog('REG_FAIL',email,'Wrong key','fail');return;}
+    if(!commKey){setErr('rerr','Could not retrieve committee key. Ask your admin to sign in once to sync the key.');return;}
+    if(key!==normalizeKey(commKey)){setErr('rerr','Wrong committee key. Ask your admin for the correct key.');return;}
     if(CCD.users.find(u=>u.email===email)){setErr('rerr','An account with this email already exists. Sign in instead.');return;}
     const reqId='REQ-'+Date.now().toString(36).toUpperCase();
     CCD.users.push({id:uid(),reqId,name,email,password:hashPw(pw),role:selRR,designation:des,division:div,status:'pending',addedBy:'Self-registration',addedAt:new Date().toLocaleString('en-GB'),lastLogin:null});
     saveCommData(CC.id,CCD);
-    addLog('REGISTER',email,'Registered as '+selRR+' (pending)','pending');
     document.getElementById('pend-msg').textContent='Your request to join '+CC.name+' as '+selRR+' has been submitted. Request ID: '+reqId;
     goPage('pg-pending');
   }
 
-  if(CC.key){
-    _finishRegister(CC.key);
-  } else {
-    // Key not in CC (loaded from old cloud registry) — fetch from Firestore
-    db.collection('committee_registry').doc(CC.id).get()
-      .then(function(doc){
-        if(doc.exists && doc.data().key){
-          CC.key = doc.data().key; // cache it
-          // Also update local portal
-          var p=getPortal();
-          var lc=p.committees.find(function(c){return c.id===CC.id;});
-          if(lc){lc.key=CC.key;savePortal(p);}
-          _finishRegister(CC.key);
-        } else {
-          // Try commdata as fallback
-          db.collection('committees').doc(CC.id).collection('commdata').doc('main').get()
-            .then(function(d2){
-              var storedKey = d2.exists ? (d2.data().key||'') : '';
-              if(storedKey){ CC.key=storedKey; }
-              _finishRegister(storedKey||'');
-            }).catch(function(){ _finishRegister(''); });
-        }
-      }).catch(function(){ setErr('rerr','Could not verify committee key. Check your internet connection.'); });
-  }
-}
-
-function checkStatus(){
-  if(!CC||!CCD){toast('Go back and select your committee first.','tamb');return;}
-  const email=(document.getElementById('li-em')?.value||document.getElementById('ri-em')?.value||'').trim().toLowerCase();
-  const user=CCD.users.find(u=>u.email===email);
-  if(!user){toast('No account found for that email.','tamb');return;}
-  if(user.status==='active'){toast('✅ Your account is approved! Go to sign in.');goPage('pg-gate');gTab('li');}
-  else if(user.status==='blocked'){toast('Your request was rejected. Contact admin.','terr');}
-  else{toast('Still pending. Check back later.','tamb');}
+  // ALWAYS fetch key fresh from Firebase
+  db.collection('committee_registry').doc(CC.id).get()
+    .then(function(doc){
+      var k = doc.exists ? normalizeKey(doc.data().key||'') : '';
+      if(k){ CC.key=k; _finishRegister(k); return; }
+      return db.collection('committees').doc(CC.id).collection('commdata').doc('main').get()
+        .then(function(d2){
+          var k2 = d2.exists ? normalizeKey(d2.data().key||'') : '';
+          if(k2){ CC.key=k2; _finishRegister(k2); return; }
+          _finishRegister(normalizeKey(CC.key||''));
+        });
+    })
+    .catch(function(){
+      _finishRegister(normalizeKey(CC.key||''));
+    });
 }
 
 // ════════════════════════════════════════════════════
