@@ -49,12 +49,37 @@ function loadCommListFirebase(callback) {
     .then(function(snapshot) {
       var list = [];
       snapshot.forEach(function(doc) { list.push(doc.data()); });
-      callback(list);
+      callback(list, null);
     })
     .catch(function(e) {
       console.warn('Registry load error:', e);
-      callback(null);
+      callback(null, e);
     });
+}
+
+// Push ALL local committees to Firebase registry (fixes committees created before cloud sync)
+function publishAllLocalCommittees(onDone) {
+  var portal = getPortal();
+  var comms = portal.committees || [];
+  if(!comms.length){ if(onDone) onDone(0); return; }
+  var done = 0;
+  comms.forEach(function(c) {
+    db.collection('committee_registry').doc(c.id).set({
+      id: c.id,
+      name: c.name,
+      code: c.code,
+      dept: c.dept || '',
+      loc: c.loc || '',
+      createdAt: c.createdAt || new Date().toISOString()
+    }).then(function(){
+      done++;
+      if(done === comms.length && onDone) onDone(done);
+    }).catch(function(e2){
+      done++;
+      console.warn('Publish error for '+c.name, e2);
+      if(done === comms.length && onDone) onDone(done);
+    });
+  });
 }
 
 function saveDFirebase(commId, data) {
@@ -500,6 +525,22 @@ tfoot td{padding:9px 10px;font-weight:600;font-size:12.5px;background:var(--sur2
     <p>Select your committee to sign in or request access.</p>
     <input class="cl-search" id="cl-search" placeholder="Search by name or code..." oninput="renderList(this.value)">
     <div class="cl-list" id="cl-list"></div>
+    <div id="fb-rules-help" style="display:none;margin-top:14px;background:#f0ede8;border:1px solid #ddd9d2;border-radius:10px;padding:14px 16px;font-size:12px;color:#6b6660;">
+      <strong style="color:#1a1814;display:block;margin-bottom:6px;">🔧 Admin: Fix Firebase Rules (one-time setup)</strong>
+      1. Go to <a href="https://console.firebase.google.com" target="_blank" style="color:#1a4a2e;font-weight:600;">console.firebase.google.com</a><br>
+      2. Open your project → <strong>Firestore Database</strong> → <strong>Rules</strong> tab<br>
+      3. Replace all rules with:<br>
+      <code style="display:block;background:#1a1814;color:#7ecb9a;border-radius:6px;padding:8px 10px;margin:6px 0;font-size:11px;white-space:pre;">rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}</code>
+      4. Click <strong>Publish</strong><br>
+      5. Come back here and refresh the page ✅
+    </div>
   </div>
   <div class="back-lnk" onclick="goPage('pg-home')">← Back</div>
 </div>
@@ -801,43 +842,53 @@ function genKey(){const c='ABCDEFGHJKLMNPQRSTUVWXYZ2345679';const seg=n=>Array.f
 // ════════════════════════════════════════════════════
 function renderList(search=''){
   const el=document.getElementById('cl-list');if(!el)return;
-  el.innerHTML='<div class="cl-empty">🔄 Loading committees...</div>';
+  el.innerHTML='<div class="cl-empty">🔄 Loading committees from cloud...</div>';
 
-  loadCommListFirebase(function(firebaseComms) {
-    // Merge Firebase registry with local committees (avoid duplicates)
+  loadCommListFirebase(function(firebaseComms, fbError) {
     const portal=getPortal();
     const localComms=portal.committees||[];
     const merged={};
-    // Add local first
     localComms.forEach(function(c){ merged[c.id]=c; });
-    // Add/overwrite from Firebase (cloud is authoritative for discovery)
+
+    if(fbError){
+      document.getElementById('fb-rules-help') && (document.getElementById('fb-rules-help').style.display='block');
+      var errCode = fbError.code||'unknown';
+      var advice = (errCode==='permission-denied')
+        ? 'Firebase rules are blocking access. The admin must update Firestore Security Rules (see instructions below).'
+        : 'Could not reach cloud ('+errCode+'). Check internet connection.';
+      var banner='<div style="background:#fdeaea;border:1px solid #f5c6c6;border-radius:8px;padding:12px 14px;font-size:12px;color:#9b2020;margin-bottom:10px;">'
+        +'<strong>⚠ Cloud unavailable:</strong> '+advice+'<br>'
+        +'<span style="opacity:.8;font-size:11px;">Only committees on <em>this device</em> are shown below.</span></div>';
+      var comms=Object.values(merged);
+      if(search) comms=comms.filter(function(c){return c.name.toLowerCase().includes(search.toLowerCase())||c.code.toLowerCase().includes(search.toLowerCase());});
+      el.innerHTML=banner+(comms.length?comms.map(function(c){
+        var d=getCommData(c.id);var members=(d&&d.users?d.users.filter(function(u){return u.status==='active';}).length:1);
+        return '<div class="cl-item" onclick="selectComm(\''+c.id+'\')"><div><div class="cl-name">'+c.name+'</div><div class="cl-sub">'+c.code+(c.dept?' · '+c.dept:'')+'</div></div><div><span class="cl-badge">'+members+' member'+(members!==1?'s':'')+'</span></div></div>';
+      }).join(''):'<div class="cl-empty">No committees found on this device.</div>');
+      return;
+    }
+
     if(firebaseComms && firebaseComms.length){
       firebaseComms.forEach(function(c){ merged[c.id]=c; });
-      // Sync any new cloud committees into local portal for offline use
       var changed=false;
       firebaseComms.forEach(function(c){
         if(!portal.committees.find(function(lc){return lc.id===c.id;})){
-          portal.committees.push(c);
-          changed=true;
+          portal.committees.push(c); changed=true;
         }
       });
       if(changed) savePortal(portal);
     }
 
-    let comms=Object.values(merged);
-    if(search) comms=comms.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.code.toLowerCase().includes(search.toLowerCase()));
+    var comms=Object.values(merged);
+    if(search) comms=comms.filter(function(c){return c.name.toLowerCase().includes(search.toLowerCase())||c.code.toLowerCase().includes(search.toLowerCase());});
 
     if(!comms.length){
-      el.innerHTML='<div class="cl-empty">No committees found.<br><br><button class="btn btn-p btn-sm" onclick="goPage(\'pg-create\');genKey()">Create new committee →</button></div>';
+      el.innerHTML='<div class="cl-empty">No committees found in cloud.<br><small style="color:#999;display:block;margin:8px 0;">If you are an admin, sign in to your committee dashboard and click <strong>Publish to Cloud</strong> so others can find it.</small><button class="btn btn-p btn-sm" onclick="goPage(\'pg-create\');genKey()">Create new committee →</button></div>';
       return;
     }
     el.innerHTML=comms.map(function(c){
-      const d=getCommData(c.id);
-      const members=(d&&d.users?d.users.filter(u=>u.status==='active').length:1);
-      return '<div class="cl-item" onclick="selectComm(\''+c.id+'\')">'
-        +'<div><div class="cl-name">'+c.name+'</div><div class="cl-sub">'+c.code+(c.dept?' · '+c.dept:'')+'</div></div>'
-        +'<div><span class="cl-badge">'+members+' member'+(members!==1?'s':'')+'</span></div>'
-        +'</div>';
+      var d=getCommData(c.id);var members=(d&&d.users?d.users.filter(function(u){return u.status==='active';}).length:1);
+      return '<div class="cl-item" onclick="selectComm(\''+c.id+'\')"><div><div class="cl-name">'+c.name+'</div><div class="cl-sub">'+c.code+(c.dept?' · '+c.dept:'')+'</div></div><div><span class="cl-badge">'+members+' member'+(members!==1?'s':'')+'</span></div></div>';
     }).join('');
   });
 }
@@ -2199,6 +2250,7 @@ function rDash(){
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1.125rem;padding:.875rem 1rem;background:var(--grnl);border:1px solid #b2ddc3;border-radius:var(--rl);">'
     +'<span style="font-size:12.5px;font-weight:600;color:var(--grn);flex:1;">🔒 Data Protection</span>'
     +'<button class="btn btn-sm" style="background:var(--grn);color:#fff;border-color:var(--grn);" onclick="syncFromCloud()">☁️ Sync from Cloud</button>'
+    +'<button class="btn btn-sm" style="background:#1a3a6b;color:#fff;border-color:#1a3a6b;" onclick="doPublishToCloud()">📡 Publish to Cloud</button>'
     +'<button class="btn btn-sm btn-at" onclick="exportBackup()">⬇ Download Backup</button>'
     +'<label class="btn btn-sm" style="cursor:pointer;background:var(--ambb);color:var(--amb);border-color:#f5dba0;">📂 Restore Backup<input type="file" accept=".json" style="display:none;" onchange="importBackup(event)"></label>'
     +'</div>'
@@ -2250,6 +2302,23 @@ function syncFromCloud(){
     toast('✅ Data synced from cloud successfully!');
     showSec('dashboard');
   });
+}
+
+function doPublishToCloud(){
+  if(!CC){toast('No committee loaded.','terr');return;}
+  toast('📡 Publishing committee to cloud registry...','tblu');
+  // Push this committee's meta to the shared registry
+  saveCommMetaFirebase(CC);
+  // Also push commData (users list) so others can register/login
+  if(CCD){
+    db.collection('committees').doc(CC.id).collection('commdata').doc('main').set(CCD)
+      .catch(function(e){ console.warn('CommData publish error:', e); });
+  }
+  // Push all MBD data
+  if(MBD){ saveDFirebase(CC.id, MBD); }
+  setTimeout(function(){
+    toast('✅ Committee published! Others can now find and join it.'); 
+  }, 1500);
 }
 
 function saveEmailCfg(){EMAIL_CFG.svc=(document.getElementById('em-svc')?.value||'').trim();EMAIL_CFG.tpl=(document.getElementById('em-tpl')?.value||'').trim();EMAIL_CFG.key=(document.getElementById('em-key')?.value||'').trim();localStorage.setItem('mb_em_svc',EMAIL_CFG.svc);localStorage.setItem('mb_em_tpl',EMAIL_CFG.tpl);localStorage.setItem('mb_em_key',EMAIL_CFG.key);if(emailOk()){try{emailjs.init({publicKey:EMAIL_CFG.key});}catch(e){}}toast('✅ Email config saved!');rDash();}
